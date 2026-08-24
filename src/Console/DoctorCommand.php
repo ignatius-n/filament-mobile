@@ -7,10 +7,12 @@ namespace Gait\FilamentMobile\Console;
 use Filament\Tables\Table;
 use Filament\Tables\TableComponent;
 use Gait\FilamentMobile\Actions\ActionResolver;
+use Gait\FilamentMobile\BroadcastsMobileChanges;
 use Gait\FilamentMobile\Dashboard\WidgetReader;
 use Gait\FilamentMobile\Introspection\ChildComponents;
 use Gait\FilamentMobile\Introspection\ComponentTypeMap;
 use Gait\FilamentMobile\Introspection\FieldPersistence;
+use Gait\FilamentMobile\Introspection\FilterDeclaration;
 use Gait\FilamentMobile\Introspection\HeadlessTableHost;
 use Gait\FilamentMobile\Introspection\MediaFields;
 use Gait\FilamentMobile\Introspection\RelationDiscovery;
@@ -18,13 +20,16 @@ use Gait\FilamentMobile\Introspection\RichContent;
 use Gait\FilamentMobile\Introspection\TagFields;
 use Gait\FilamentMobile\MobileResource;
 use Gait\FilamentMobile\PanelSchemaBuilder;
+use Gait\FilamentMobile\Realtime;
 use Gait\FilamentMobile\ResourceRegistry;
 use Gait\FilamentMobile\Validation\RuleExtractor;
 use Gait\MobileCore\WalkWarnings;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -80,6 +85,8 @@ final class DoctorCommand extends Command
         $translatableProblems = $this->translatableProblems($mobile, $builder);
         $reorderProblems = $this->reorderProblems($mobile);
         $labelProblems = $this->labelProblems($mobile, $builder);
+        $filterProblems = $this->filterProblems($mobile, $this->doctorRequest($user));
+        $realtimeProblems = $this->realtimeProblems($registry, $mobile);
 
         $this->exposure($registry, $mobile, $panel);
         $this->section('Unsupported components', [...$unsupported, ...$this->pasteLines($unsupported)]);
@@ -102,10 +109,19 @@ final class DoctorCommand extends Command
             $this->section('Labels', $labelProblems);
         }
 
+        if ($filterProblems !== []) {
+            $this->section('Filters', $filterProblems);
+        }
+
+        if ($realtimeProblems !== []) {
+            $this->section('Realtime', $realtimeProblems);
+        }
+
         // A resource nobody could walk is a hole in the gate, not a clean bill
         // of health: CI reads the exit code, not the prose above it.
         $actionable = count($unsupported) + count($drift['actionable'])
-            + count($actionProblems) + count($widgetProblems) + count($this->skipped($registry, $mobile, $panel));
+            + count($actionProblems) + count($widgetProblems) + count($realtimeProblems)
+            + count($this->skipped($registry, $mobile, $panel));
 
         $this->newLine();
         $this->line($actionable === 0
@@ -141,6 +157,98 @@ final class DoctorCommand extends Command
     private function guard(): string
     {
         return config('filament-mobile.guard') ?? config('auth.defaults.guard');
+    }
+
+    /**
+     * `FilterDeclaration` needs a real `Request` to bind into the container
+     * around evaluating each filter's `->visible()` closure — this command
+     * has no HTTP request to thread, so one is synthesised carrying the
+     * same `--user` identity the rest of this run already resolved.
+     */
+    private function doctorRequest(?Authenticatable $user): Request
+    {
+        $request = new Request();
+        $request->setUserResolver(fn () => $user);
+
+        return $request;
+    }
+
+    /**
+     * Reverb is deliberately host-owned, but a half-enabled setup otherwise
+     * fails as a silently stale app. Every line here maps to a configuration
+     * change the host can make, so each one participates in the CI exit code.
+     *
+     * @param  array<class-string, MobileResource>  $mobile
+     * @return list<string>
+     */
+    private function realtimeProblems(ResourceRegistry $registry, array $mobile): array
+    {
+        $broadcasting = array_filter(
+            $mobile,
+            fn (MobileResource $resource): bool => $resource->getBroadcasts(),
+        );
+
+        if ($broadcasting === []) {
+            return [];
+        }
+
+        $problems = [];
+        $models = [];
+
+        foreach ($broadcasting as $class => $resource) {
+            $model = $class::getModel();
+            $models[$model][] = $registry->keyFor($class);
+
+            if (! in_array(BroadcastsMobileChanges::class, class_uses_recursive($model), true)) {
+                $problems[] = $registry->keyFor($class) . ': ' . class_basename($model)
+                    . ' must use BroadcastsMobileChanges';
+            }
+        }
+
+        foreach ($models as $model => $keys) {
+            if (count($keys) > 1) {
+                $problems[] = class_basename($model) . ': more than one broadcasting resource owns this model ('
+                    . implode(', ', $keys) . '); events fail closed until ownership is unambiguous';
+            }
+        }
+
+        $configuration = Realtime::configuration();
+
+        if ($configuration === null) {
+            $problems[] = config('filament-mobile.realtime', false) === false
+                ? 'broadcasts() is enabled but filament-mobile.realtime is disabled'
+                : 'filament-mobile.realtime is invalid or the active broadcast connection is not Reverb';
+
+            return $problems;
+        }
+
+        $target = trim($configuration['authEndpoint'], '/');
+        $route = null;
+
+        foreach (Route::getRoutes() as $candidate) {
+            if (trim($candidate->uri(), '/') === $target && in_array('POST', $candidate->methods(), true)) {
+                $route = $candidate;
+                break;
+            }
+        }
+
+        if ($route === null) {
+            $problems[] = $configuration['authEndpoint']
+                . ': missing POST broadcast authentication route';
+
+            return $problems;
+        }
+
+        $guard = config('filament-mobile.guard');
+        $expected = $guard === null ? 'auth' : 'auth:' . $guard;
+        $middleware = $route->gatherMiddleware();
+
+        if (! in_array($expected, $middleware, true)) {
+            $problems[] = $configuration['authEndpoint'] . ': expected `' . $expected
+                . '` so private channels use the same guard as the mobile API';
+        }
+
+        return $problems;
     }
 
     /**
@@ -438,7 +546,7 @@ final class DoctorCommand extends Command
     }
 
     /**
-     * Section 7. Three repeater shapes this slice legitimately cannot
+     * Section 7. Four repeater shapes this slice legitimately cannot
      * support — a panel legitimately has these, and the slice simply does
      * not support them (design spec, "Known weaknesses, stated now"):
      *
@@ -452,6 +560,10 @@ final class DoctorCommand extends Command
      *    DELETED from every row on save; the field is published read-only
      *    instead, and this is the only place a panel author can learn which
      *    child cost them the control.
+     *  - a repeater containing a KeyValue with one or more restricted edit
+     *    gates. The row list has no stable identity, so a stored-versus-
+     *    submitted comparison could enforce that gate against the wrong row
+     *    after an insertion or removal.
      *
      * A `->relationship()` repeater is NOT in this list since P9: its rows
      * write through the relation pass, so it is published editable. The one
@@ -507,8 +619,9 @@ final class DoctorCommand extends Command
 
     /**
      * The two refusals only the components can explain: a relationship
-     * repeater whose gate cannot answer, and one whose item template holds a
-     * child that would not round-trip.
+     * repeater whose gate cannot answer, one whose item template holds a
+     * child that would not round-trip, and one containing a restricted
+     * KeyValue whose trusted comparison has no stable row identity.
      *
      * A RESOLVABLE relationship repeater is no longer a finding: since P9 its
      * rows write through the relation pass (Filament's own
@@ -538,6 +651,8 @@ final class DoctorCommand extends Command
 
                 if (FieldPersistence::refusesRelationship($component, $error) && $error !== null) {
                     $lines[] = $label . ': its relationship gate cannot answer (' . $error->getMessage() . '), so the repeater is published read-only — a gate that cannot answer refuses';
+                } elseif (($restricted = RuleExtractor::restrictedKeyValueChild(ChildComponents::of($component))) !== null) {
+                    $lines[] = $label . ': child `' . $restricted . '` has restricted KeyValue permissions, so the whole repeater is published read-only — repeater rows have no stable identity for a trusted permission diff';
                 } elseif (! FieldPersistence::refuses($component)) {
                     $withheld = RuleExtractor::withheldChild(ChildComponents::of($component));
 
@@ -1048,6 +1163,80 @@ final class DoctorCommand extends Command
 
                 if ($sortableColumn !== $column) {
                     $lines[] = $short . ': table reorders [' . $column . '] but the model\'s Spatie sortable column is [' . $sortableColumn . ']';
+                }
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
+     * Every reason `FilterDeclaration` refuses a table filter — a
+     * `QueryBuilder`, a bare custom `Filter`, a non-searchable select with
+     * no options, and a `mobile()->filters()` name that resolves
+     * to no table filter at all — plus two diagnostics this package builds
+     * itself against every PUBLISHED select/ternary filter: its `apply()`
+     * observably narrowing nothing, and its `apply()` throwing outright.
+     *
+     * `SelectFilter::$isStatic` has no public accessor, and this package
+     * refuses to reflect Filament internals (see
+     * `Introspection/ReorderDeclaration.php`'s class doc for the
+     * precedent). So the no-op probe is behavioural: apply the filter to a
+     * throwaway query with its own first published option and diff the SQL
+     * against an untouched query. Doctor-only, never the request path —
+     * this runs one extra query build per published filter, every doctor
+     * invocation.
+     *
+     * A filter whose `apply()` itself throws (e.g. a `TrashedFilter` on a
+     * model without `SoftDeletes`) is reported by name and exception,
+     * never left to crash this command — but it is the MORE urgent of the
+     * two findings this probe can make: the same throw hits the real list
+     * endpoint the moment a request actually applies this filter.
+     *
+     * @param  array<class-string, MobileResource>  $mobile
+     * @return list<string>
+     */
+    private function filterProblems(array $mobile, Request $request): array
+    {
+        $lines = [];
+
+        foreach ($mobile as $class => $resource) {
+            // One `Table` build per resource, shared by the refusal walk,
+            // the published walk and the probe below — see
+            // `FilterDeclaration::tableFilters()`.
+            $rawFilters = FilterDeclaration::tableFilters($class, $request);
+            [$publishedFilters, $refusals] = FilterDeclaration::classify($rawFilters, $class, $request, $resource->getFilters());
+
+            $lines = [...$lines, ...$refusals];
+
+            $short = class_basename($class);
+            $modelClass = $class::getModel();
+
+            foreach ($publishedFilters as $published) {
+                // A dynamic remote filter has no option until its search
+                // callback receives a query. There is no honest sample value
+                // doctor can invent, so it cannot run the behavioural
+                // narrowing probe for this one. The endpoint itself is
+                // exercised when the picker searches.
+                if ($published->options === []) {
+                    continue;
+                }
+
+                $sampleValue = $published->options[0]['value'];
+                $sampleData = $published->multiple
+                    ? ['values' => [$sampleValue]]
+                    : ['value' => $sampleValue];
+
+                try {
+                    $before = $modelClass::query();
+                    $after = $modelClass::query();
+                    $rawFilters[$published->name]->apply($after, $sampleData);
+
+                    if ($before->toSql() === $after->toSql()) {
+                        $lines[] = "{$short}: filter [{$published->name}] narrows nothing — is it ->static()?";
+                    }
+                } catch (Throwable $e) {
+                    $lines[] = "{$short}: filter [{$published->name}] threw when applied — " . $e::class . ': ' . $e->getMessage();
                 }
             }
         }

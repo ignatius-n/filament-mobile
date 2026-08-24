@@ -7,8 +7,8 @@ namespace Gait\MobileCore;
 use Gait\MobileCore\Ports\RichTextEnvelopes;
 use Gait\MobileCore\Ports\TagSeparatorSource;
 use Illuminate\Database\Eloquent\Model;
-use Throwable;
 use Illuminate\Support\Arr;
+use Throwable;
 
 /**
  * Turns a record into exactly the payload the card declared, and nothing more.
@@ -31,6 +31,9 @@ final class RecordSerializer
 
     /** @var list<string> */
     private array $richPaths = [];
+
+    /** @var list<string> */
+    private array $mapPointPaths = [];
 
     /**
      * Path => collection/multiplicity for every Spatie media field the
@@ -189,6 +192,20 @@ final class RecordSerializer
     }
 
     /**
+     * Map plugin paths are normalised to the contract's one point object:
+     * numeric strings become numbers and plugin-only geojson is discarded.
+     *
+     * @param  list<string>  $paths
+     */
+    public function withMapPointPaths(array $paths): self
+    {
+        $clone = clone $this;
+        $clone->mapPointPaths = array_values(array_unique($paths));
+
+        return $clone;
+    }
+
+    /**
      * Every Spatie media field on this record: a path this is called with
      * gets a raw uuid value (honouring its declared single/multiple shape)
      * plus a `"$path.__media"` sibling of full item metadata — url, thumbUrl,
@@ -290,6 +307,24 @@ final class RecordSerializer
         // projected, off the relationship.
         foreach ($this->repeaterRows as $name => $rows) {
             $payload[$name] = $rows;
+        }
+
+        foreach ($this->mapPointPaths as $path) {
+            // MapFields walks the resource's raw component tree, including a
+            // map the schema walker may have refused (GeoMan, split storage,
+            // or unreadable config). Never let normalisation create that
+            // refused path in an otherwise-whitelisted payload.
+            if (! array_key_exists($path, $payload) && ! Arr::has($payload, $path)) {
+                continue;
+            }
+
+            $normalised = self::normaliseMapPoint(Arr::get($payload, $path));
+
+            if (array_key_exists($path, $payload)) {
+                $payload[$path] = $normalised;
+            } else {
+                data_set($payload, $path, $normalised);
+            }
         }
 
         // LAST, and flat, exactly like a translatable's `caption.ar`. Three
@@ -506,5 +541,34 @@ final class RecordSerializer
         }
 
         return $payload;
+    }
+
+    /** @return array{lat: int|float, lng: int|float}|null */
+    private static function normaliseMapPoint(mixed $value): ?array
+    {
+        if (is_string($value)) {
+            $value = json_decode($value, true);
+        }
+
+        if (! is_array($value) || ! isset($value['lat'], $value['lng'])) {
+            return null;
+        }
+
+        $number = static function (mixed $coordinate): int|float|null {
+            if (is_int($coordinate) || is_float($coordinate)) {
+                return $coordinate;
+            }
+
+            if (! is_string($coordinate) || ! is_numeric($coordinate)) {
+                return null;
+            }
+
+            return str_contains($coordinate, '.') ? (float) $coordinate : (int) $coordinate;
+        };
+
+        $lat = $number($value['lat']);
+        $lng = $number($value['lng']);
+
+        return $lat === null || $lng === null ? null : ['lat' => $lat, 'lng' => $lng];
     }
 }

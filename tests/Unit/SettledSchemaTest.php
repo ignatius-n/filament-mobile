@@ -204,4 +204,15 @@ it('derives a higher cap than the default literal for a form with more writable 
 
     expect($settled->passes())->toBeGreaterThan(32)
         ->and($settled->state()["x{$count}"])->toBe('safe');
+
+    // Passing the literal default explicitly is still a PIN. Before null was
+    // the auto-derive sentinel, `maxPasses: 32` was indistinguishable from an
+    // omitted argument and silently expanded to 41 despite the public
+    // parameter contract promising an exact ceiling.
+    expect(fn () => SettledSchema::settle(
+        submitted: $submitted,
+        trusted: $trusted,
+        build: fakeBuild($writableRules),
+        maxPasses: 32,
+    ))->toThrow(\RuntimeException::class, 'did not settle in 32 passes');
 });

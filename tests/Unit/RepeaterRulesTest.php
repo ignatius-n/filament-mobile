@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\MarkdownEditor;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\TextInput;
@@ -421,4 +422,61 @@ it('keys a per-item rule at exactly <repeater>.*.<child>, however deep the LAYOU
     foreach (array_keys($rules) as $name) {
         expect(substr_count($name, '.'))->toBeLessThanOrEqual(2, $name);
     }
+});
+
+it('keeps a repeater editable when every nested keyvalue permission is open', function () {
+    $components = [
+        Repeater::make('rows')->schema([
+            KeyValue::make('meta'),
+        ]),
+    ];
+
+    expect(RuleExtractor::restrictedKeyValueChild(ChildComponents::of($components[0])))->toBeNull()
+        ->and(RuleExtractor::withheldChild(ChildComponents::of($components[0])))->toBeNull()
+        ->and(RuleExtractor::fromComponents($components))->toHaveKeys(['rows', 'rows.*.meta'])
+        ->and(WritableNames::of($components))->toBe(['rows']);
+});
+
+it('refuses a whole json repeater when a nested keyvalue has restricted permissions', function () {
+    $components = [
+        Repeater::make('rows')->schema([
+            Section::make('Nested')->schema([
+                KeyValue::make('meta')->editableValues(false),
+            ]),
+        ]),
+    ];
+
+    expect(RuleExtractor::restrictedKeyValueChild(ChildComponents::of($components[0])))->toBe('meta')
+        ->and(RuleExtractor::withheldChild(ChildComponents::of($components[0])))->toBe('meta')
+        ->and(RuleExtractor::fromComponents($components))->toBe([])
+        ->and(WritableNames::of($components))->toBe([]);
+});
+
+it('refuses a whole relationship repeater when a nested keyvalue has restricted permissions', function () {
+    $components = Schema::make(null)
+        ->model(Banner::class)
+        ->components([
+            Repeater::make('tag_rows')->relationship('tags')->schema([
+                KeyValue::make('meta')->addable(false),
+            ]),
+        ])
+        ->getComponents();
+
+    expect(RuleExtractor::restrictedKeyValueChild(ChildComponents::of($components[0])))->toBe('meta')
+        ->and(RuleExtractor::fromComponents($components))->toBe([])
+        ->and(WritableNames::of($components))->toBe([]);
+});
+
+it('fails a repeater closed when a nested keyvalue permission cannot answer', function () {
+    $components = [
+        Repeater::make('rows')->schema([
+            KeyValue::make('meta')->deletable(
+                fn () => throw new RuntimeException('boom'),
+            ),
+        ]),
+    ];
+
+    expect(RuleExtractor::restrictedKeyValueChild(ChildComponents::of($components[0])))->toBe('meta')
+        ->and(RuleExtractor::fromComponents($components))->toBe([])
+        ->and(WritableNames::of($components))->toBe([]);
 });

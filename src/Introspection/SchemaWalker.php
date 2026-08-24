@@ -39,6 +39,12 @@ final class SchemaWalker
      */
     private array $confirmationNames = [];
 
+    /** @var array<int, array<string, mixed>|null> */
+    private array $mapConfigs = [];
+
+    /** @var array<string, list<string>> */
+    private array $modelColumns = [];
+
     public function __construct(private readonly WalkWarnings $warnings)
     {
         $this->evaluator = new SafeEvaluator($warnings);
@@ -78,6 +84,7 @@ final class SchemaWalker
         $components = is_array($components) ? $components : iterator_to_array($components);
 
         $this->confirmationNames = $this->confirmationNamesIn($components, $resource);
+        $this->mapConfigs = [];
 
         return $this->walkNodes($components, $resource, $resourceKey ?? $resource, false, $model);
     }
@@ -148,6 +155,10 @@ final class SchemaWalker
                     'unsupported component type ' . $component::class,
                 );
 
+                continue;
+            }
+
+            if ($this->refusesMobilePluginField($component, $type, $resource, $model)) {
                 continue;
             }
 
@@ -311,6 +322,24 @@ final class SchemaWalker
             $node['placeholder'] = $placeholder;
         }
 
+        // Per-component direction reuses Filament's own HTML declaration:
+        // input attributes are the most specific answer for components that
+        // expose them, while universal extra attributes cover entries,
+        // layouts, and third-party component classes. An input-level `dir`
+        // overrides the wrapper-level one exactly as it does in the browser.
+        // Only the closed values a Flutter Directionality can act on leave
+        // the server; absent/`auto`/malformed values continue to inherit the
+        // panel direction. Named value/entry nodes only: layout containers
+        // are flattened by the form renderer and cannot truthfully promise a
+        // subtree override through this field-level contract.
+        $direction = $name === null
+            ? null
+            : $this->directionOf($component, $resource, $name);
+
+        if ($direction !== null) {
+            $node['direction'] = $direction;
+        }
+
         // P17: `translatable: true` on a dotted leaf whose head segment is
         // one of the MODEL's OWN translatable attributes — never guessed
         // from the dotted name alone. A `category.name` BelongsTo path is
@@ -413,6 +442,35 @@ final class SchemaWalker
         }
 
         return $node;
+    }
+
+    private function directionOf(object $component, string $resource, ?string $name): ?string
+    {
+        $input = $this->read(
+            $component,
+            'getExtraInputAttributes',
+            $resource,
+            $name,
+            'extraInputAttributes',
+        );
+
+        if (is_array($input) && in_array($input['dir'] ?? null, ['ltr', 'rtl'], true)) {
+            return $input['dir'];
+        }
+
+        $attributes = $this->read(
+            $component,
+            'getExtraAttributes',
+            $resource,
+            $name,
+            'extraAttributes',
+        );
+
+        if (is_array($attributes) && in_array($attributes['dir'] ?? null, ['ltr', 'rtl'], true)) {
+            return $attributes['dir'];
+        }
+
+        return null;
     }
 
     /**
@@ -799,6 +857,67 @@ final class SchemaWalker
 
     private function config(object $component, string $type, string $resource, ?string $name, string $resourceKey, bool $insideRepeater = false, ?string $model = null): array
     {
+        if (in_array($type, ['map_point', 'map_point_entry'], true)) {
+            $decoded = $this->mapConfig($component, $resource, $name) ?? [];
+            $controls = is_array($decoded['controls'] ?? null) ? $decoded['controls'] : [];
+
+            $config = [
+                'tilesUrl' => is_string($decoded['tilesUrl'] ?? null) ? $decoded['tilesUrl'] : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'attribution' => is_string($decoded['attribution'] ?? null) ? $decoded['attribution'] : null,
+                'zoom' => $this->mapNumber($controls['zoom'] ?? $decoded['zoom'] ?? 15, 15),
+            ];
+
+            if ($type === 'map_point_entry') {
+                return $config;
+            }
+
+            $config['draggable'] = (bool) ($decoded['draggable'] ?? true);
+            $config['clickable'] = (bool) ($decoded['clickable'] ?? false);
+            $config['showMarker'] = (bool) ($decoded['showMarker'] ?? true);
+            $config['minZoom'] = $this->mapNumber($controls['minZoom'] ?? $decoded['minZoom'] ?? 1, 1);
+            $config['maxZoom'] = $this->mapNumber($controls['maxZoom'] ?? $decoded['maxZoom'] ?? 28, 28);
+            $config['default'] = $this->mapPoint($decoded['default'] ?? null) ?? ['lat' => 0.0, 'lng' => 0.0];
+
+            return $config;
+        }
+
+        if ($type === 'phone') {
+            $hasCountryPath = (bool) $this->read($component, 'hasCountryStatePath', $resource, $name, 'countryPath', false);
+            $format = $hasCountryPath
+                ? 'national'
+                : strtolower((string) $this->read($component, 'getInputNumberFormat', $resource, $name, 'format', 'e164'));
+
+            if (! in_array($format, ['e164', 'international', 'national', 'rfc3966'], true)) {
+                $format = 'e164';
+            }
+
+            $config = ['format' => $format];
+
+            if ($hasCountryPath) {
+                $countryPath = $this->read($component, 'getCountryStatePath', $resource, $name, 'countryPath');
+
+                if (is_string($countryPath) && $countryPath !== '') {
+                    $config['countryPath'] = $countryPath;
+                }
+            }
+
+            $defaultCountry = $this->read($component, 'getDefaultCountry', $resource, $name, 'defaultCountry');
+
+            if (is_string($defaultCountry) && $defaultCountry !== '') {
+                $config['defaultCountry'] = $defaultCountry;
+            }
+
+            foreach (['onlyCountries' => 'getOnlyCountries', 'excludeCountries' => 'getExcludeCountries'] as $key => $method) {
+                $countries = $this->read($component, $method, $resource, $name, $key, []);
+
+                if (is_array($countries) && $countries !== []) {
+                    $config[$key] = array_values(array_filter($countries, 'is_string'));
+                }
+            }
+
+            return $config;
+        }
+
         // Upload is P6a; multiple is P12. A file field genuinely persists
         // (the upload endpoint hands back a path per file, the ordinary
         // write path saves a single path like any other string column, or a
@@ -934,7 +1053,8 @@ final class SchemaWalker
             // capability the server did not declare — so the server has to
             // declare it.
             //
-            // Three ways to earn it, and the last is P6c's close-out:
+            // Four ways to earn it, and the last two are server write
+            // refusals:
             //
             //  - a NESTED one: two levels of row coordinate is a different
             //    problem, and until now the client rendered a working
@@ -953,8 +1073,14 @@ final class SchemaWalker
             //    relationship repeater: its rows never travel through
             //    `validated()`, so the key-deletion hazard withheldChild()
             //    guards against does not apply to it.
+            //  - any repeater containing a restricted KeyValue. Repeater rows
+            //    have no stable wire identity, so a stored-versus-submitted
+            //    KeyValue diff could be paired with the wrong row after an
+            //    insertion/removal. RuleExtractor refuses both JSON and
+            //    relationship repeaters on the same predicate.
             $config['readOnly'] = $insideRepeater
                 || $this->unanswerableRelationshipGate($component, $resource, $name)
+                || RuleExtractor::restrictedKeyValueChild(ChildComponents::of($component)) !== null
                 || (! FieldPersistence::savesViaRelationship($component)
                     && RuleExtractor::withheldChild(ChildComponents::of($component)) !== null);
 
@@ -1529,6 +1655,163 @@ final class SchemaWalker
         }
 
         return is_array($declared) && in_array('confirmed', $declared, true);
+    }
+
+    /**
+     * Fail closed on plugin features whose Livewire or persistence semantics
+     * the mobile contract cannot reproduce without losing data.
+     *
+     * @param  class-string|null  $model
+     */
+    private function refusesMobilePluginField(object $component, string $type, string $resource, ?string $model): bool
+    {
+        $name = $this->nameOf($component, $resource);
+
+        if ($type === 'phone') {
+            $lookup = (bool) $this->read($component, 'canPerformIpLookup', $resource, $name, 'ipLookup', true);
+
+            if ($lookup) {
+                $this->warnings->add(
+                    $resource,
+                    $name ?? $component::class,
+                    'phone IP lookup requires Livewire and is unavailable on mobile; call disableLookup() and configure defaultCountry() instead',
+                );
+
+                return true;
+            }
+
+            return false;
+        }
+
+        if ($type !== 'map_point') {
+            return false;
+        }
+
+        $config = $this->mapConfig($component, $resource, $name);
+
+        if ($config === null) {
+            // Bare unit fixtures cannot attach Map::getMapConfig() to a
+            // schema. A real request always supplies a wired component; on
+            // that path an unreadable config is an unknown GeoMan verdict and
+            // must refuse rather than risk dropping drawing state.
+            if (! FieldPersistence::isWired($component)) {
+                return false;
+            }
+
+            $this->warnings->add(
+                $resource,
+                $name ?? $component::class,
+                'could not read map configuration; refusing the field',
+            );
+
+            return true;
+        }
+
+        $geoMan = is_array($config['geoMan'] ?? null) ? $config['geoMan'] : [];
+
+        if (($geoMan['show'] ?? false) === true) {
+            $this->warnings->add(
+                $resource,
+                $name ?? $component::class,
+                'GeoMan drawing state is not supported on mobile; the map field was omitted to avoid dropping geojson',
+            );
+
+            return true;
+        }
+
+        if ($model === null || $name === null || $name === '') {
+            return false;
+        }
+
+        try {
+            $record = new $model();
+            $column = explode('.', $name, 2)[0];
+            $connection = $record->getConnection();
+            $table = $record->getTable();
+            $cacheKey = ($connection->getName() ?? '') . ':' . $table;
+            $columns = $this->modelColumns[$cacheKey]
+                ??= $connection->getSchemaBuilder()->getColumnListing($table);
+
+            if (in_array($column, $columns, true)) {
+                return false;
+            }
+        } catch (Throwable $e) {
+            $this->warnings->add(
+                $resource,
+                $name,
+                'could not verify the map storage column; refusing the field: ' . $e->getMessage(),
+            );
+
+            return true;
+        }
+
+        $this->warnings->add(
+            $resource,
+            $name,
+            'map state path is not a persisted model attribute (split latitude/longitude storage); use one JSON column for the point',
+        );
+
+        return true;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function mapConfig(object $component, string $resource, ?string $name): ?array
+    {
+        $id = spl_object_id($component);
+
+        if (array_key_exists($id, $this->mapConfigs)) {
+            return $this->mapConfigs[$id];
+        }
+
+        $raw = $this->read($component, 'getMapConfig', $resource, $name, 'mapConfig');
+
+        if (! is_string($raw)) {
+            return $this->mapConfigs[$id] = null;
+        }
+
+        $decoded = json_decode($raw, true);
+
+        if (! is_array($decoded)) {
+            $this->warnings->add(
+                $resource,
+                $name ?? $component::class,
+                'map configuration is not valid JSON',
+            );
+
+            return $this->mapConfigs[$id] = null;
+        }
+
+        return $this->mapConfigs[$id] = $decoded;
+    }
+
+    private function mapNumber(mixed $value, int|float $fallback): int|float
+    {
+        if (is_int($value) || is_float($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && is_numeric($value)) {
+            return str_contains($value, '.') ? (float) $value : (int) $value;
+        }
+
+        return $fallback;
+    }
+
+    /** @return array{lat: int|float, lng: int|float}|null */
+    private function mapPoint(mixed $value): ?array
+    {
+        if (! is_array($value) || ! array_key_exists('lat', $value) || ! array_key_exists('lng', $value)) {
+            return null;
+        }
+
+        $lat = $this->mapNumber($value['lat'], NAN);
+        $lng = $this->mapNumber($value['lng'], NAN);
+
+        if (! is_finite((float) $lat) || ! is_finite((float) $lng)) {
+            return null;
+        }
+
+        return ['lat' => $lat, 'lng' => $lng];
     }
 
     private function nameOf(object $component, string $resource): ?string

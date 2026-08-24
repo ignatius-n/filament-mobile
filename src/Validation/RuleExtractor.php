@@ -296,6 +296,16 @@ final class RuleExtractor
                     return [];
                 }
 
+                // A relationship repeater bypasses validated() and lets
+                // Filament save whole child rows. A restricted KeyValue in
+                // that template therefore cannot use RecordForm's trusted
+                // top-level map comparison. Refuse the owning repeater rather
+                // than publish controls whose permissions the API cannot
+                // enforce after rows are added, removed, or reordered.
+                if (self::restrictedKeyValueChild(ChildComponents::of($component)) !== null) {
+                    return [];
+                }
+
                 $name = self::read($component, 'getName');
 
                 if (! is_string($name) || $name === '') {
@@ -562,6 +572,15 @@ final class RuleExtractor
                 return self::labelOf($component);
             }
 
+            // A repeater row has no stable identity in the wire contract. A
+            // restricted KeyValue child cannot be compared safely with the
+            // stored row after another row is inserted or removed, so the
+            // whole owning repeater must be refused. All-open KeyValues need
+            // no operation check and continue to round-trip normally.
+            if ($type === 'keyvalue' && ! self::keyValuePermissionsAreOpen($component)) {
+                return self::labelOf($component);
+            }
+
             // A relation-write child (a `CheckboxList::relationship()` in a
             // row). This mirrors fromComponents()'s OWN extra filter rather
             // than childrenOf()'s refusals — the two disagree here, and that
@@ -628,6 +647,49 @@ final class RuleExtractor
         }
 
         return null;
+    }
+
+    /**
+     * Find a KeyValue child whose operation permissions need trusted row
+     * identity that a repeater's list wire shape does not carry.
+     *
+     * Public because SchemaWalker uses the same predicate for
+     * `config.readOnly`, including relationship repeaters which deliberately
+     * skip withheldChild()'s JSON round-trip checks.
+     *
+     * @param  iterable<mixed>  $components
+     */
+    public static function restrictedKeyValueChild(iterable $components): ?string
+    {
+        foreach ($components as $component) {
+            if (! is_object($component)) {
+                continue;
+            }
+
+            $type = ComponentTypeMap::for($component);
+
+            if ($type === 'keyvalue' && ! self::keyValuePermissionsAreOpen($component)) {
+                return self::labelOf($component);
+            }
+
+            if (in_array($type, ComponentTypeMap::LAYOUT_TYPES, true) || $type === 'repeater') {
+                $restricted = self::restrictedKeyValueChild(ChildComponents::of($component));
+
+                if ($restricted !== null) {
+                    return $restricted;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static function keyValuePermissionsAreOpen(object $component): bool
+    {
+        return self::read($component, 'isAddable') === true
+            && self::read($component, 'isDeletable') === true
+            && self::read($component, 'canEditKeys') === true
+            && self::read($component, 'canEditValues') === true;
     }
 
     private static function labelOf(object $component): string
@@ -891,6 +953,20 @@ final class RuleExtractor
 
         if (is_array($declared) && in_array('confirmed', $declared, true)) {
             $rules[] = 'confirmed';
+        }
+
+        // PhoneInput::validateFor() registers a real Laravel validation-rule
+        // object. Unlike the scalar accessors above, there is no second
+        // getter from which to reconstruct its country/type/leniency config;
+        // the resolved object is the rule. Keep this class-name-independent
+        // through the first-class contract type so the runtime package still
+        // has no dependency on the optional phone plugin.
+        if (ComponentTypeMap::for($component) === 'phone' && is_array($declared)) {
+            foreach ($declared as $rule) {
+                if ((is_string($rule) || is_object($rule)) && ! in_array($rule, $rules, true)) {
+                    $rules[] = $rule;
+                }
+            }
         }
 
         $max = self::read($component, 'getMaxLength');

@@ -8,7 +8,9 @@ use BackedEnum;
 use Filament\Facades\Filament;
 use Filament\Schemas\Schema;
 use Filament\Support\Contracts\HasLabel;
+use Gait\FilamentMobile\Introspection\FilterDeclaration;
 use Gait\FilamentMobile\Introspection\HeadlessSchemaHost;
+use Gait\FilamentMobile\Introspection\PublishedFilter;
 use Gait\FilamentMobile\Introspection\RelationDiscovery;
 use Gait\FilamentMobile\Introspection\ReorderDeclaration;
 use Gait\FilamentMobile\Introspection\SchemaWalker;
@@ -84,6 +86,18 @@ final class PanelSchemaBuilder
 
         if ($locales !== null) {
             $panel['locales'] = $locales;
+        }
+
+        $poll = self::poll();
+
+        if ($poll !== null) {
+            $panel['poll'] = $poll;
+        }
+
+        $realtime = Realtime::configuration();
+
+        if ($realtime !== null) {
+            $panel['realtime'] = $realtime;
         }
 
         return [
@@ -196,6 +210,41 @@ final class PanelSchemaBuilder
         return $value;
     }
 
+    /**
+     * Opt-in screen revalidation intervals, in seconds. `true` selects the
+     * defaults; an array may override any subset. A malformed or non-positive
+     * value disables the whole declaration rather than starting a runaway
+     * timer or silently substituting a cadence the host did not choose.
+     *
+     * @return array{lists: int, detail: int, dashboard: int}|null
+     */
+    private static function poll(): ?array
+    {
+        $configured = config('filament-mobile.poll', false);
+
+        if ($configured === true) {
+            $configured = [];
+        }
+
+        if (! is_array($configured)) {
+            return null;
+        }
+
+        $poll = [
+            'lists' => $configured['lists'] ?? 15,
+            'detail' => $configured['detail'] ?? 15,
+            'dashboard' => $configured['dashboard'] ?? 5,
+        ];
+
+        foreach ($poll as $seconds) {
+            if (! is_int($seconds) || $seconds < 1 || $seconds > 3600) {
+                return null;
+            }
+        }
+
+        return $poll;
+    }
+
     /** @return array<string, mixed> */
     private function resource(
         string $class,
@@ -207,6 +256,19 @@ final class PanelSchemaBuilder
         $model = $class::getModel();
         $short = class_basename($class);
         $key = $this->registry->keyFor($class);
+
+        // FilterDeclaration needs a real Request to bind into the container
+        // around evaluating each filter's ->visible() closure (see its own
+        // authorizes()-style doc). The HTTP path always threads one; a
+        // console caller (DoctorCommand, PanelSchemaBuilderTest) passes
+        // none, so one is synthesised here carrying the same $user this
+        // whole resource() call already resolved permissions against —
+        // never a second identity.
+        $filterRequest = $request ?? new Request();
+
+        if ($request === null) {
+            $filterRequest->setUserResolver(fn () => $user);
+        }
 
         $block = [
             'key' => $key,
@@ -238,12 +300,15 @@ final class PanelSchemaBuilder
                 'enabled' => $mobile->getSearchable() !== [],
             ],
             'sorts' => $mobile->sortsToArray(),
-            // Always empty in P1, and not an uncovered branch — there is no
-            // branch. Filters are declared on Filament's *table*, which this
-            // package deliberately never reads (see the architecture test), so
-            // there is nothing to introspect and nothing to test. The key stays
-            // because the contract defines it and the client expects a list.
-            'filters' => [],
+            // P24: the SECOND schema-path read of the resource's own table
+            // (P18's reorder declaration was the first). Permitted here for
+            // the same reason — it goes through HeadlessTableHost, so this
+            // file still imports no Filament Tables class and the
+            // architecture test is unchanged.
+            'filters' => array_map(
+                fn (PublishedFilter $filter): array => $filter->toNode(),
+                FilterDeclaration::for($class, $filterRequest, $mobile->getFilters()),
+            ),
             // Always present, even when empty, so a client never has to
             // branch on the key's absence — the same reason `filters` stays.
             'relations' => $this->relations($class, $mobile),
@@ -282,6 +347,12 @@ final class PanelSchemaBuilder
                 'column' => $reorder->column,
                 'direction' => $reorder->direction,
             ];
+        }
+
+        $realtimeResource = Realtime::forModel(new $model(), $this->registry);
+
+        if ($realtimeResource !== null && $realtimeResource['key'] === $key) {
+            $block['channel'] = $realtimeResource['channel'];
         }
 
         // The web sidebar's count badge, published verbatim: the value is

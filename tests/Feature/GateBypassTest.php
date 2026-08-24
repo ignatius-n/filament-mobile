@@ -111,6 +111,25 @@ it('does not apply the default of a hidden field', function () {
     expect(Banner::query()->where('name', 'Crafted')->value('hidden_note'))->toBeNull();
 });
 
+it('writes a top-level hidden field that explicitly dehydrates while hidden on create', function () {
+    $this->actingAs(makeUser('admin'))
+        ->postJson('/api/mobile-panel/banners', crafted(['hidden_note' => 'created intentionally']))
+        ->assertCreated();
+
+    expect(Banner::query()->where('name', 'Crafted')->value('hidden_note'))
+        ->toBe('created intentionally');
+});
+
+it('writes a top-level hidden field that explicitly dehydrates while hidden on update', function () {
+    $banner = seedBannerWith(['hidden_note' => 'before']);
+
+    $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", crafted(['hidden_note' => 'after']))
+        ->assertOk();
+
+    expect($banner->fresh()->hidden_note)->toBe('after');
+});
+
 it('still applies an ungated default, so the guard has not eaten the feature', function () {
     $this->actingAs(makeUser('admin'))
         ->postJson('/api/mobile-panel/banners', crafted([]))

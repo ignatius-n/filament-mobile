@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Gait\FilamentMobile\Write;
 
+use Filament\Forms\Components\KeyValue;
 use Filament\Schemas\Schema;
 use Gait\FilamentMobile\Introspection\HeadlessSchemaHost;
 use Gait\FilamentMobile\Introspection\MediaFields;
@@ -51,15 +52,12 @@ final class RecordForm
      * operation is derived from it rather than passed separately, so the two
      * can never disagree about which one this is.
      *
-     * ponytail: accepted residual — plain `getComponents()`, not
-     * `getComponents(withHidden: true)` the way StateController's read side
-     * calls it. A top-level `->hidden()->dehydratedWhenHidden()` field
-     * genuinely IS writable (`isDehydrated()` only excludes a field that is
-     * hidden and NOT re-dehydrated-when-hidden), but this call drops it before
-     * SettledSchema or WritableNames ever sees it, so it silently never
-     * writes even though `/state` — which does pass `withHidden: true` —
-     * reports it writable. Exotic shape; the honest fix is passing
-     * `withHidden: true` on this path too, not a filter over on `/state`.
+     * Hidden components must reach WritableNames. Filament's default is that a
+     * hidden field does not dehydrate, so ordinary hidden fields still refuse;
+     * `->dehydratedWhenHidden()` explicitly reverses that rule and is a real
+     * writable field. `/state` already reads withHidden for the same reason.
+     * Filtering here made the two endpoints disagree and silently discarded a
+     * legal write behind a 200 response.
      *
      * @param  class-string  $class
      * @param  array<string, mixed>  $state
@@ -72,7 +70,7 @@ final class RecordForm
             $state,
             $record === null ? 'create' : 'edit',
             $record,
-        ))->getComponents();
+        ))->getComponents(withHidden: true);
     }
 
     /**
@@ -201,6 +199,155 @@ final class RecordForm
             static fn (string $name): bool => self::isRuleNameAllowed($name, $writable),
             ARRAY_FILTER_USE_KEY,
         );
+    }
+
+    /**
+     * Reject submitted values the monotonic settle dropped even though its
+     * final component build reports the field writable again.
+     *
+     * This is the shrink-only residual: accepting the field would reintroduce
+     * the crafted/self-refused value the settle removed, while silently
+     * ignoring it returns 200 for a write that did not happen. A field-keyed
+     * 422 is the only honest third answer and already travels through the
+     * package's existing WriteInvalid/form-error path.
+     *
+     * Narrow on purpose, matching StateController::lockRefused(). Unknown,
+     * hidden, disabled, and currently non-dehydrated fields are not all errors:
+     * many are ordinary partial-payload shapes. Only a name the FINAL build
+     * says writable but the accumulated allow-set refused belongs here.
+     *
+     * @param  array<string, mixed>  $submitted
+     */
+    public static function rejectRefusedSubmitted(SettledSchema $settled, array $submitted): void
+    {
+        $refused = array_diff(
+            WritableNames::of($settled->components()),
+            $settled->writable(),
+        );
+
+        $errors = [];
+
+        foreach ($refused as $name) {
+            if (Arr::has($submitted, $name)) {
+                $errors[$name] = 'This field changed availability while the form was being evaluated. Refresh and try again.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
+    /**
+     * Enforce KeyValue's four row-level gates against trusted state.
+     *
+     * Filament uses these gates to draw controls, but its ordinary `array`
+     * validation rule cannot stop a client that submits the final map
+     * directly. Mobile writes have a trusted comparison value available at
+     * both seams — form defaults on create and cast record attributes on
+     * update — so the API can make the same controls authoritative.
+     *
+     * A map carries no row identifiers. Consequently, a key rename is
+     * indistinguishable from deleting one entry and adding another. When key
+     * editing is disabled, a request containing both operations is rejected
+     * conservatively; a pure addition or deletion remains governed by its
+     * own independent gate. Existing values are compared only for keys that
+     * survive in both maps, so an allowed new row may still receive its
+     * initial value when existing values are locked.
+     *
+     * This runs after Laravel validation, so every submitted KeyValue value
+     * is already an array. Only fields present in the request are checked: an
+     * omitted field keeps its stored value or receives its trusted default
+     * through fillMissingPaths(), exactly as before.
+     *
+     * @param  array<string, mixed>  $submitted  validated request values
+     * @param  array<string, mixed>  $trusted  defaults or stored cast values
+     */
+    public static function enforceKeyValuePermissions(
+        SettledSchema $settled,
+        array $submitted,
+        array $trusted,
+    ): void {
+        $allowed = array_flip($settled->writable());
+        $errors = [];
+
+        foreach (RuleExtractor::writableComponents($settled->components()) as $name => $component) {
+            if (! $component instanceof KeyValue
+                || ! isset($allowed[$name])
+                || ! Arr::has($submitted, $name)) {
+                continue;
+            }
+
+            $after = Arr::get($submitted, $name);
+
+            // Defensive only: the `array` rule has already run. Keeping the
+            // guard here makes the method safe for another write seam to call
+            // without accidentally treating a scalar as an empty map.
+            if (! is_array($after)) {
+                continue;
+            }
+
+            $before = Arr::get($trusted, $name, []);
+
+            if ($before === null) {
+                $before = [];
+            }
+
+            if (! is_array($before)) {
+                $errors[$name] = 'The stored key/value data cannot be compared safely. Fix it in the panel and try again.';
+
+                continue;
+            }
+
+            try {
+                $addable = $component->isAddable();
+                $deletable = $component->isDeletable();
+                $editableKeys = $component->canEditKeys();
+                $editableValues = $component->canEditValues();
+            } catch (Throwable) {
+                // A permission that cannot answer must not become permission.
+                // The schema reader may still degrade a broken cosmetic read,
+                // but the authoritative write seam fails closed.
+                $errors[$name] = 'The key/value permissions could not be evaluated. Refresh and try again.';
+
+                continue;
+            }
+
+            $added = array_diff(array_keys($after), array_keys($before));
+            $removed = array_diff(array_keys($before), array_keys($after));
+
+            if (! $editableKeys && $added !== [] && $removed !== []) {
+                $errors[$name] = 'Keys cannot be renamed for this field.';
+
+                continue;
+            }
+
+            if (! $addable && $added !== []) {
+                $errors[$name] = 'Pairs cannot be added to this field.';
+
+                continue;
+            }
+
+            if (! $deletable && $removed !== []) {
+                $errors[$name] = 'Pairs cannot be removed from this field.';
+
+                continue;
+            }
+
+            if (! $editableValues) {
+                foreach (array_intersect(array_keys($before), array_keys($after)) as $key) {
+                    if ($before[$key] !== $after[$key]) {
+                        $errors[$name] = 'Existing values cannot be changed for this field.';
+
+                        continue 2;
+                    }
+                }
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     /**

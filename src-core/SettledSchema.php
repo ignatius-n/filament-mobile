@@ -59,25 +59,27 @@ final class SettledSchema
      * @param  array<string, mixed>  $submitted  client-controlled state
      * @param  array<string, mixed>  $trusted    path => value; the reset target
      * @param  callable(array<string, mixed>): array{components: mixed, writable: array<int, string>}  $build
-     * @param  int  $maxPasses  The literal default (32) is a floor, derived
-     *                          upward on pass 1 to |writable names| + 2 when
-     *                          that is larger. Passing an explicit value
-     *                          PINS the ceiling exactly instead — no
-     *                          derivation — which is what lets a test force
-     *                          the fail-closed throw deliberately.
+     * @param  int|null  $maxPasses  Null derives a ceiling on pass 1 from
+     *                               |writable names| + 2, with 32 as its
+     *                               floor. Any explicit integer PINS the
+     *                               ceiling exactly instead — including the
+     *                               literal 32. Null is the sentinel because
+     *                               PHP cannot otherwise distinguish an
+     *                               omitted default argument from a caller
+     *                               explicitly passing the same integer.
      */
     public static function settle(
         array $submitted,
         array $trusted,
         callable $build,
-        int $maxPasses = self::DEFAULT_MAX_PASSES,
+        ?int $maxPasses = null,
     ): self {
         // Everything is trusted until the schema says otherwise. `null` is
         // "not yet narrowed", which is not the same as "nothing allowed".
         $allowed = null;
         $state = $submitted;
         $pass = 0;
-        $cap = $maxPasses;
+        $cap = $maxPasses ?? self::DEFAULT_MAX_PASSES;
 
         while (true) {
             $pass++;
@@ -112,11 +114,11 @@ final class SettledSchema
 
             // Derived once, off pass 1's writable count — the widest the
             // allow-set is ever going to be, since every later pass can only
-            // shrink it. Only when the caller left the literal default in
+            // shrink it. Only when the caller left the null sentinel in
             // place: an explicit $maxPasses is a pin, not a floor, and
             // deriving over it would silently defeat a caller's (or a test's)
-            // deliberately low ceiling.
-            if ($pass === 1 && $maxPasses === self::DEFAULT_MAX_PASSES) {
+            // deliberately chosen ceiling.
+            if ($pass === 1 && $maxPasses === null) {
                 $cap = max(self::DEFAULT_MAX_PASSES, count($built['writable']) + 2);
             }
 

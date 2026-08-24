@@ -13,8 +13,12 @@ use Gait\FilamentMobile\Actions\ActionResolver;
 use Gait\FilamentMobile\Introspection\ChildComponents;
 use Gait\FilamentMobile\Introspection\ComponentTypeMap;
 use Gait\FilamentMobile\Introspection\FieldPersistence;
+use Gait\FilamentMobile\Introspection\FilterApplier;
+use Gait\FilamentMobile\Introspection\FilterDeclaration;
 use Gait\FilamentMobile\Introspection\FormDefaults;
 use Gait\FilamentMobile\Introspection\MediaFields;
+use Gait\FilamentMobile\Introspection\MapFields;
+use Gait\FilamentMobile\Introspection\PublishedFilter;
 use Gait\FilamentMobile\Introspection\ReorderDeclaration;
 use Gait\FilamentMobile\Introspection\RichContent;
 use Gait\FilamentMobile\Introspection\RichContentAdapter;
@@ -26,9 +30,12 @@ use Gait\FilamentMobile\MobileCard;
 use Gait\FilamentMobile\PanelSchemaBuilder;
 use Gait\FilamentMobile\ResourceRegistry;
 use Gait\FilamentMobile\Write\RecordForm;
+use Gait\FilamentMobile\Write\DeleteRefusedException;
+use Gait\FilamentMobile\Write\RecordDeleter;
 use Gait\FilamentMobile\Write\WritableNames;
 use Gait\MobileCore\Authorizer;
 use Gait\MobileCore\ListQuery;
+use Gait\MobileCore\MobileResource;
 use Gait\MobileCore\RecordSerializer;
 use Gait\MobileCore\SettledSchema;
 use Gait\MobileCore\WalkWarnings;
@@ -157,6 +164,7 @@ final class MobilePanelController
         // DOTTED card fields, so without this a card-bound `cover` lazy-loads
         // `media` once per row: 20 rows, 20 extra queries.
         $cardMediaPaths = $this->cardMediaPaths($class, $card);
+        $cardMapPaths = $this->cardMapPaths($class, $card);
 
         // Same reasoning as $cardMediaPaths, and the same eager-load gap it
         // closes: a card-bound tags field (e.g. a `subtitle('tags')`) is
@@ -193,6 +201,19 @@ final class MobilePanelController
         // branch only.
         ListQuery::applySearch($query, ListQuery::stringQuery($request, 'search'), $mobile->getSearchable());
 
+        // P24, and applied to both modes for the same reason `search` is:
+        // Filament keeps its FILTER state active while reordering
+        // (applyFiltersToTableQuery has no reordering branch, unlike
+        // CanSortRecords' — see the comment block in the reorder branch
+        // below). Validated against exactly what /schema published for THIS
+        // requester, so a filter a policy hides is an unknown filter here too.
+        // One `Table` build for the whole request: the same filter objects
+        // are classified (to validate `?filter[...]` against exactly what
+        // /schema published) and then applied.
+        $tableFilters = FilterDeclaration::tableFilters($class, $request);
+
+        FilterApplier::apply($query, $tableFilters, $request, $this->filterState($request, $class, $mobile, $tableFilters));
+
         // One serializer either way — index() always serialises through the
         // card, reorder mode included, so there is exactly one place this gets
         // constructed rather than one per branch.
@@ -204,6 +225,7 @@ final class MobilePanelController
             new TagSeparatorAdapter(),
         ))
             ->withMediaPaths($cardMediaPaths)
+            ->withMapPointPaths($cardMapPaths)
             ->withTagPaths($cardTagPaths);
 
         // Exactly the string '1' — anything else (`0`, `yes`, absent) is the
@@ -251,7 +273,7 @@ final class MobilePanelController
             //   divergence in mobile's favour, not a bug to match.
             $records = $query->reorder()->orderBy($declaration->column, $declaration->direction)->get();
 
-            return response()->json([
+            return ConditionalJson::respond($request, [
                 'data' => array_map(
                     static fn (Model $record): array => $serializer->serialize($record),
                     $records->all(),
@@ -273,7 +295,7 @@ final class MobilePanelController
 
         $records = $query->paginate(config('filament-mobile.per_page'));
 
-        return response()->json([
+        return ConditionalJson::respond($request, [
             'data' => array_map(
                 static fn (Model $record): array => $serializer->serialize($record),
                 $records->items(),
@@ -310,6 +332,10 @@ final class MobilePanelController
         // sibling the form will never write (`Hidden`, unmapped, `file`) would
         // otherwise be opened by crafting that sibling's value. See
         // SettledSchema and WritableNames.
+        $trusted = FormDefaults::fromComponents(
+            RecordForm::components($class, [], record: null),
+        );
+
         $settled = SettledSchema::settle(
             submitted: $request->all(),
             // The panel's own defaults are the trusted state on create: there
@@ -329,9 +355,7 @@ final class MobilePanelController
             //
             // An empty state is also exactly what Filament's own CreateRecord
             // fills defaults into, so this is the closer match either way.
-            trusted: FormDefaults::fromComponents(
-                RecordForm::components($class, [], record: null),
-            ),
+            trusted: $trusted,
             build: function (array $state) use ($class): array {
                 $components = RecordForm::components($class, $state, record: null);
 
@@ -341,10 +365,14 @@ final class MobilePanelController
 
         $components = $settled->components();
 
+        RecordForm::rejectRefusedSubmitted($settled, $request->all());
+
         $validated = $request->validate(
             RecordForm::rules($settled),
             attributes: RecordForm::validationAttributes($settled),
         );
+
+        RecordForm::enforceKeyValuePermissions($settled, $validated, $trusted);
 
         $model = $class::getModel();
 
@@ -374,6 +402,7 @@ final class MobilePanelController
             new TagSeparatorAdapter(),
         ))
             ->withMediaPaths($this->mediaPathsFor($class))
+            ->withMapPointPaths($this->mapPathsFor($class))
             ->withTagPaths($this->tagPathsFor($class));
 
         return response()->json(['data' => $serializer->serialize($record)], 201);
@@ -406,10 +435,43 @@ final class MobilePanelController
         // ponytail: no ->with(). Eager loading is the N+1 defence for a *page*
         // of records; for one record it trades a lazy load for an identical
         // extra query and buys nothing.
-        $record = $class::getEloquentQuery()
-            ->where($model->qualifyColumn($model->getRouteKeyName()), $id)
-            ->first()
-            ?? abort(404, "No [{$resource}] record [{$id}].");
+        $query = $class::getEloquentQuery()
+            ->where($model->qualifyColumn($model->getRouteKeyName()), $id);
+
+        // An EMPTY filter state, not this request's `?filter[...]`: a record
+        // addressed by id over REST is not a filtered list, so the values a
+        // list request happened to name must not 404 it.
+        //
+        // That is NOT the same as "no filter narrows this endpoint", and the
+        // difference is one filter kind wide. `FilterApplier::dataFor()`
+        // reads `getDefaultState()` for a bare `Filter` whatever state is
+        // passed (there is no other honest reading — Filament's own
+        // `Filter::getFormField()` pre-checks the checkbox from that
+        // default), so `Filter::make('x')->query(...)->default()` DOES
+        // narrow record resolution here, exactly as web's
+        // `resolveTableRecord()` does. A select/ternary `->default()`, by
+        // contrast, is genuinely skipped: an empty `$data` makes a select
+        // no-op. `EscapingFilterResource`'s "Keep C" row pins the first half
+        // — a 404 on `GET /{resource}/{id}` where P23 served 200.
+        //
+        // What the pass is ALSO here for is `TrashedFilter`'s baseQuery(),
+        // which strips the SoftDeletingScope while its own apply() is
+        // skipped by excludeWhenResolvingRecord() — that is what keeps a
+        // soft-deleted record reachable at its own URL, as it is on the web
+        // panel.
+        // ponytail: show() only. The write endpoints below resolve through
+        // the plain resource query, exactly as they did before P24 — widening
+        // what update/delete can address is a write-path decision, not a
+        // filter one.
+        FilterApplier::apply(
+            $query,
+            FilterDeclaration::tableFilters($class, $request),
+            $request,
+            [],
+            isResolvingRecord: true,
+        );
+
+        $record = $query->first() ?? abort(404, "No [{$resource}] record [{$id}].");
 
         $user = $request->user();
 
@@ -445,6 +507,7 @@ final class MobilePanelController
         // which is moot in practice: the same collection reads the same way
         // from either component.
         $form['mediaPaths'] = [...MediaFields::pathsIn($infolistComponents), ...$form['mediaPaths']];
+        $form['mapPaths'] = [...MapFields::pathsIn($infolistComponents), ...$form['mapPaths']];
 
         // The form's own Spatie tags fields plus the infolist's read-only
         // `SpatieTagsEntry` ones — the same fold `mediaPaths` just got above,
@@ -468,11 +531,12 @@ final class MobilePanelController
             ->withRepeaterRows($form['repeaterRows'])
             ->withRichPaths(RichContent::entryNamesIn($infolist))
             ->withMediaPaths($form['mediaPaths'])
+            ->withMapPointPaths($form['mapPaths'])
             ->withTagPaths($form['tagPaths']);
 
         $resolver = new ActionResolver($class, $mobile);
 
-        return response()->json([
+        return ConditionalJson::respond($request, [
             // Not wrapped in a hydrate call here, deliberately: the read half
             // lives inside RecordSerializer, so index() and the
             // write responses get it too. Wrapping one seam is how the first
@@ -670,9 +734,11 @@ final class MobilePanelController
         // avoid.
         // Through SettledSchema, for the reason store() is: a gate reading a
         // sibling this form will never write is a gate the payload can open.
+        $trusted = $record->attributesToArray();
+
         $settled = SettledSchema::settle(
             submitted: [...$record->attributesToArray(), ...$request->all()],
-            trusted: $record->attributesToArray(),
+            trusted: $trusted,
             // The record, not just its attributes: state alone answers
             // `Get $get`, but `disabled(fn (Model $record) => ...)` and
             // `disabledOn('edit')` need the schema to know which row this is
@@ -687,10 +753,14 @@ final class MobilePanelController
 
         $rules = RecordForm::rules($settled);
 
+        RecordForm::rejectRefusedSubmitted($settled, $request->all());
+
         $validated = $request->validate(
             $rules,
             attributes: RecordForm::validationAttributes($settled),
         );
+
+        RecordForm::enforceKeyValuePermissions($settled, $validated, $trusted);
 
         // A dotted rule path (`caption.en`) validates into a nested array, and
         // Eloquent writes the WHOLE `caption` attribute — so a PUT carrying one
@@ -717,6 +787,7 @@ final class MobilePanelController
             new TagSeparatorAdapter(),
         ))
             ->withMediaPaths($this->mediaPathsFor($class))
+            ->withMapPointPaths($this->mapPathsFor($class))
             ->withTagPaths($this->tagPathsFor($class));
 
         return response()->json(['data' => $serializer->serialize($record)]);
@@ -727,7 +798,7 @@ final class MobilePanelController
         // Same order as show()/update(): resource 404 → viewAny 403 → record
         // 404 → record gate 403 — a resource or record nobody serves must
         // never leak its existence through a 403.
-        [$class, ] = $this->registry->findByKey($resource)
+        [$class, $mobile] = $this->registry->findByKey($resource)
             ?? abort(404, "No mobile resource [{$resource}].");
 
         // BEFORE the record lookup — see update() for both reasons: web
@@ -757,17 +828,11 @@ final class MobilePanelController
             403,
         );
 
-        // The model's delete, NOT Filament's DeleteAction — a known delta, so
-        // it is documented rather than silently different. `DeleteAction` is a
-        // Livewire construct this package deliberately does not host, so its
-        // `before()`/`after()` hooks and its restrict-if-related-records guard
-        // do not run here. Everything hanging off `$record->delete()` does:
-        // observers, soft deletes, cascades, and the policy already checked
-        // above. The pilot measured 1 of 33 resources relying on a hook (it
-        // retires a WhatsApp template in Meta, which a mobile delete leaves
-        // live) — the fix for such a resource is an observer, which both
-        // panels then honour.
-        $record->delete();
+        try {
+            RecordDeleter::delete($mobile, $record);
+        } catch (DeleteRefusedException $e) {
+            abort(409, $e->getMessage());
+        }
 
         return response()->json(null, 204);
     }
@@ -870,7 +935,7 @@ final class MobilePanelController
      *
      * @param  class-string  $class
      * @param  array<string, mixed>  $state
-     * @return array{paths: list<string>, repeaterRows: array<string, list<array<string, mixed>>>, mediaPaths: array<string, array{collection: string, multiple: bool}>, tagPaths: array<string, array{any: bool, type: ?string}>}
+     * @return array{paths: list<string>, repeaterRows: array<string, list<array<string, mixed>>>, mediaPaths: array<string, array{collection: string, multiple: bool}>, mapPaths: list<string>, tagPaths: array<string, array{any: bool, type: ?string}>}
      */
     private function formProjection(string $class, string $resourceKey, array $state, Model $record): array
     {
@@ -883,7 +948,7 @@ final class MobilePanelController
                 . class_basename($class) . ', the edit form will open unprefilled: '
                 . $e->getMessage());
 
-            return ['paths' => [], 'repeaterRows' => [], 'mediaPaths' => [], 'tagPaths' => []];
+            return ['paths' => [], 'repeaterRows' => [], 'mediaPaths' => [], 'mapPaths' => [], 'tagPaths' => []];
         }
 
         // $model matters here for the exact reason infolistPaths() passes it
@@ -930,8 +995,18 @@ final class MobilePanelController
                 $record,
             ),
             'mediaPaths' => MediaFields::pathsIn($components),
+            'mapPaths' => MapFields::pathsIn($components),
             'tagPaths' => TagFields::pathsIn($components),
         ];
+    }
+
+    /** @param class-string $class @return list<string> */
+    private function mapPathsFor(string $class): array
+    {
+        return array_values(array_unique([
+            ...MapFields::pathsIn($this->builder->schemaComponents($class, 'infolist')),
+            ...MapFields::pathsIn($this->builder->schemaComponents($class, 'form')),
+        ]));
     }
 
     /**
@@ -990,6 +1065,26 @@ final class MobilePanelController
     }
 
     /**
+     * `?filter[...]` read against the filters `/schema` published for THIS
+     * request — the same `FilterDeclaration::for()` call, with the same
+     * `mobile()->filters()` narrowing and the same per-request `->visible()`
+     * evaluation, so the list endpoint cannot narrow by a filter the schema
+     * withheld. A name it withheld is simply an unknown filter (422), which
+     * is also the only answer that keeps a hidden filter hidden.
+     *
+     * @param  class-string  $class
+     * @param  array<string, object>  $tableFilters
+     * @return array<string, string|list<string>>
+     */
+    private function filterState(Request $request, string $class, MobileResource $mobile, array $tableFilters): array
+    {
+        return ListQuery::filters($request, array_map(
+            static fn (PublishedFilter $filter): array => $filter->toValidatorArray(),
+            FilterDeclaration::classify($tableFilters, $class, $request, $mobile->getFilters())[0],
+        ));
+    }
+
+    /**
      * The resource's OWN media paths, intersected with the CARD's whitelist —
      * `index()`'s card-only serializer must not grow a `.__media` sibling for
      * a field the list row never carries in the first place (`photos` on
@@ -1012,6 +1107,15 @@ final class MobilePanelController
         ];
 
         return array_intersect_key($paths, array_flip($card->fieldPaths()));
+    }
+
+    /** @param class-string $class @return list<string> */
+    private function cardMapPaths(string $class, MobileCard $card): array
+    {
+        return array_values(array_intersect(
+            $this->mapPathsFor($class),
+            $card->fieldPaths(),
+        ));
     }
 
     /**

@@ -36,6 +36,17 @@ final class MobileResource
     /** @var list<string> */
     private array $actions = [];
 
+    /** @var list<string> */
+    private array $filters = [];
+
+    private ?Closure $beforeDelete = null;
+
+    private ?Closure $deleteUsing = null;
+
+    private ?Closure $afterDelete = null;
+
+    private bool $broadcasts = false;
+
     /** @var array<string, list<string>> relation key => searchable columns */
     private array $relationSearchable = [];
 
@@ -255,6 +266,70 @@ final class MobileResource
         return $this;
     }
 
+    /**
+     * Names of the resource's own `table()->filters()` opted in for mobile,
+     * mirroring `actions()` above exactly. The package never constructs a
+     * filter: this says WHICH, Filament says WHAT. A name that resolves
+     * nowhere — or resolves to a filter this slice cannot publish (a
+     * `QueryBuilder`, an over-cap select) — is omitted from the wire and
+     * reported by `filament-mobile:doctor`.
+     *
+     * @param  list<string>  $names
+     */
+    public function filters(array $names): self
+    {
+        $this->filters = array_values(array_unique($names));
+
+        return $this;
+    }
+
+    /**
+     * Mobile-specific equivalent of a Filament DeleteAction lifecycle hook.
+     *
+     * Filament actions require Livewire and cannot run in the headless API.
+     * These callbacks make delete behavior explicit without forcing business
+     * logic out of the resource; model observers remain the preferred choice
+     * when web and mobile should always share the same behavior.
+     */
+    public function beforeDelete(Closure $callback): self
+    {
+        $this->beforeDelete = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Replaces the model delete operation. The callback receives the record
+     * and a zero-argument default deleter. Returning false refuses the delete;
+     * any other return value is success.
+     */
+    public function deleteUsing(Closure $callback): self
+    {
+        $this->deleteUsing = $callback;
+
+        return $this;
+    }
+
+    public function afterDelete(Closure $callback): self
+    {
+        $this->afterDelete = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Opts this resource into the package's private resource-channel change
+     * feed. The model must also use BroadcastsMobileChanges; keeping the two
+     * declarations explicit prevents installing this package from making an
+     * existing model broadcast unexpectedly.
+     */
+    public function broadcasts(bool $condition = true): self
+    {
+        $this->broadcasts = $condition;
+
+        return $this;
+    }
+
     public function getCard(): MobileCard
     {
         return $this->card;
@@ -286,6 +361,32 @@ final class MobileResource
     public function getActions(): array
     {
         return $this->actions;
+    }
+
+    /** @return list<string> */
+    public function getFilters(): array
+    {
+        return $this->filters;
+    }
+
+    public function getBeforeDelete(): ?Closure
+    {
+        return $this->beforeDelete;
+    }
+
+    public function getDeleteUsing(): ?Closure
+    {
+        return $this->deleteUsing;
+    }
+
+    public function getAfterDelete(): ?Closure
+    {
+        return $this->afterDelete;
+    }
+
+    public function getBroadcasts(): bool
+    {
+        return $this->broadcasts;
     }
 
     /** @return list<string> */

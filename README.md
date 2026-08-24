@@ -187,6 +187,7 @@ fields the infolist names.
 |---|---|
 | [Resources and cards](#opt-a-resource-in) | Opt in per resource; the card is declared, the form and infolist are read from the resource |
 | [Actions](#actions) | The panel's own record actions, published per record with their authorization already applied |
+| [Filters](#filters) | `SelectFilter`/`TernaryFilter`/`TrashedFilter` published and enforced on the list endpoint; `QueryBuilder` and unbounded selects refused by name |
 | [Upload](#upload) | Single- and multi-file `FileUpload` / `SpatieMediaLibraryFileUpload`, with the field's own accept and size rules enforced per file |
 | [Medialibrary](#medialibrary) | `spatie/laravel-medialibrary` fields and entries — media UUIDs plus a full-metadata sibling, wholesale-replaced on save |
 | [Repeater](#repeater) | JSON-column repeaters, validated per row |
@@ -194,13 +195,15 @@ fields the infolist names.
 | [Toggle buttons](#toggle-buttons) | `ToggleButtons` — single or multiple, always inlined, never a search URL |
 | [Slider](#slider) | Single or range slider, bounds published and enforced |
 | [Tags](#tags) | Free-form string tags, per-tag rules enforced, a configured separator mirrored into the stored column |
-| [Key/value](#keyvalue) | Free-form key-value pairs, gated by four client hints |
+| [Key/value](#keyvalue) | Free-form key-value pairs with four server-enforced edit gates |
 | [Colour](#colour) | `ColorPicker` in the format the panel declared, never converted |
 | [Time and date bounds](#time-and-date-bounds) | `TimePicker` as its own type, and the `minDate`/`maxDate` a picker declares |
 | [Relations](#relations) | Relation managers as child lists — writable when exactly one resource owns the child model, searchable and sortable where the host declares it |
 | [Rich text](#rich-text) | `RichEditor` columns as a structured document, sanitised by construction |
+| [Map points and phone numbers](#map-points-and-phone-numbers) | Optional Filament plugins with a closed, validated mobile contract |
 | [Dashboard](#dashboard) | The panel's opted-in widgets, computed live |
-| [Locale and direction](#locale-and-direction) | The panel's own locale and `ltr`/`rtl`, so the phone lays out the way the panel does |
+| [Background refresh](#background-refresh) | Opt-in polling plus optional private-channel Reverb invalidation |
+| [Locale and direction](#locale-and-direction) | Panel locale/direction plus explicit per-field and per-entry overrides |
 | [Schema caching](#schema-caching) | An ETag on `/schema` so a cold start is one conditional request |
 
 **Which fields work?** See [Supported form inputs](#supported-form-inputs) — the table to check before pointing this at a panel.
@@ -228,7 +231,7 @@ database rather than at validation.
 | `CheckboxList` | `multiselect` | |
 | `TagsInput` | `tags` | per-tag rules enforced; a `->separator()` is mirrored into the stored column |
 | `SpatieTagsInput` | `tags` | wholesale sync through Filament's own relationship closure, not the column write above; no separator participation; per-tag rules unenforced (see [Spatie tags](#spatie-tags)) |
-| `KeyValue` | `keyvalue` | four gates published as **client hints**, not enforced on write |
+| `KeyValue` | `keyvalue` | add/remove/key/value gates are enforced on every write |
 | `Toggle` | `toggle` | |
 | `Slider` | `slider` | single or range; range mode is detected from an array `->default()` on `/schema` (see [Slider](#slider)) |
 | `Checkbox` | `checkbox` | |
@@ -239,6 +242,9 @@ database rather than at validation.
 | `FileUpload` | `file` | single or `->multiple()`; a multiple field's value is a List of stored paths, count bounds enforced on write |
 | `SpatieMediaLibraryFileUpload` | `file` | same shape, but the value is media **UUID** strings, not paths, and saving reconciles the whole collection — see [Medialibrary](#medialibrary) |
 | `SpatieMediaLibraryImageEntry` | `image_entry` | infolist-only, read-only; card-bound the same way `leadingImage()` already works — see [Medialibrary](#medialibrary) |
+| `Dotswan\MapPicker\Fields\Map` | `map_point` | one `{lat, lng}` JSON column; GeoMan and split-column storage are refused |
+| `Dotswan\MapPicker\Infolists\MapEntry` | `map_point_entry` | infolist-only; rendered by the optional Flutter maps companion |
+| `Ysfkaya\FilamentPhoneInput\Forms\PhoneInput` | `phone` | verbatim value plus the plugin's server-side phone validation; Livewire IP lookup is refused |
 | `RichEditor` | `textarea` | **edited as raw HTML**; it renders as a document on read (see [Rich text](#rich-text)) but editing is still markup |
 | `Repeater` | `repeater` | JSON-column or `->relationship()`; only when **every** child round-trips |
 | `Hidden` | — | deliberately skipped from the wire; its `->default()` still applies on create |
@@ -266,15 +272,61 @@ over the built-ins:
 ```php
 // config/filament-mobile.php
 'types' => [
-    \Ysfkaya\FilamentPhoneInput\Forms\PhoneInput::class => 'text',
     \Filament\Forms\Components\MarkdownEditor::class => 'textarea',
 ],
 ```
 
-That is how the pilot panel handled its phone-input and icon-picker plugins.
+That is how the pilot panel handled its icon-picker plugin. PhoneInput is now
+first-class and needs no host mapping.
 The constraint is that the value must be a type the contract already defines —
 you can point a new component at an existing renderer, but you cannot invent a
 new one without a change to this package.
+
+## Map points and phone numbers
+
+Support is activated automatically when either optional Filament plugin is
+installed; this package never requires it at runtime for panels that do not use
+it:
+
+```bash
+composer require dotswan/filament-map-picker ysfkaya/filament-phone-input
+```
+
+A map must store its own state in one persisted JSON attribute:
+
+```php
+Map::make('location')
+    ->defaultLocation(latitude: 30.0444, longitude: 31.2357)
+    ->zoom(12)
+    ->clickable();
+```
+
+Its wire value is `{"lat": 30.0444, "lng": 31.2357}`. Numeric strings are
+accepted from existing records and published as numbers. The map's tile URL,
+attribution, camera bounds, marker flag, and interaction flags are client
+hints; the server still owns validation and persistence. A GeoMan-enabled map
+is omitted because writing only its point would discard GeoJSON. A map whose
+state path is not a real model column is also omitted, so a userland
+`afterStateUpdated()` split into latitude/longitude columns cannot pretend to
+round-trip. `filament-mobile:doctor` names either refusal.
+
+Phone values remain exactly the strings the panel stores. Use a deterministic
+country source because the plugin's default IP lookup is a Livewire request a
+mobile client cannot perform:
+
+```php
+PhoneInput::make('phone')
+    ->disableLookup()
+    ->defaultCountry('EG')
+    ->validateFor('EG');
+```
+
+The published format is one of `e164`, `international`, `national`, or
+`rfc3966`. A configured country state path forces `national`, matching the
+plugin's own dehydration behavior. Country allow/exclude lists are hints; the
+plugin's real Laravel phone rule remains the write gate and returns its normal
+field-keyed 422. Client-side formatting, country picking, geocoding, keyed tile
+providers, offline tiles, and GeoJSON drawing are outside this contract.
 
 ### Rule hints travel with the field — and are enforced
 
@@ -377,6 +429,172 @@ the re-fetch refreshes both.
 Actions with modal forms, bulk actions, page-level (header) actions, action
 groups, and list-card actions. Row actions declared on the resource's
 `table()` are the whole surface.
+
+## Filters
+
+A resource's `table()->filters([...])` publish on `/schema` as `filters`, a
+sibling of `columns`/`actions` on the resource block, and are enforced by
+`GET /{resource}?filter[name]=value` on the list endpoint. This package
+never re-implements a `where`: every published filter is applied by handing
+the request's state to the resource's OWN Filament filter object, in
+Filament's own order (`FilterApplier`).
+
+### What is published
+
+| Filament filter | Wire `type` | Notes |
+|---|---|---|
+| `SelectFilter` | `select` | options inline up to `options_inline_max`; larger or dynamic searchable sets publish `config.optionsUrl`; `config.multiple: true` when `->multiple()` or the filter is a `MultiSelectFilter` |
+| `TernaryFilter` | `select` | shaped as a select with the fixed `1`/`0` pair, Filament's own true/false labels and placeholder |
+| `TrashedFilter` | `select` | IS a `TernaryFilter` (`with_trashed`/`only_trashed`/`without_trashed` labels come for free) — `filter[trashed]=1` unions in soft-deleted rows, `filter[trashed]=0` isolates them, unset (or `filter[trashed]=`) excludes them |
+
+A filter's own `->default()` travels to `/schema` and is applied automatically
+when a request names no value for that filter at all — see the 422 matrix
+below for the difference between "no value" and an explicit empty one.
+
+**The published `default` is normalised to the filter's own arity, and a
+value outside its options is dropped.** A client seeds its filter state from
+`default` and echoes it on the very first fetch, where the 422 matrix below
+validates it like any other value — so publishing `default: "a"` for a
+`->multiple()` filter would make that resource answer
+`Filter [x] takes a list of values.` to every client, forever. `->multiple()`
+therefore always publishes a list, a single-value filter always publishes a
+scalar (the first value, if the panel declared a list), an empty default is
+published as no default at all, and a default naming a value the options do
+not offer is dropped with a doctor line.
+
+### What is refused, and why
+
+| Reason | Doctor line |
+|---|---|
+| `QueryBuilder` — no mobile constraint-tree UI | `{Resource}: filter [{name}] — query builder — not supported on mobile` |
+| A bare custom `Filter` with its own schema — arbitrary form, deferred | `{Resource}: filter [{name}] — custom filter schema — deferred` |
+| A `SelectFilter` whose options are empty and which is not searchable — it has neither values to inline nor a search callback to serve | `{Resource}: filter [{name}] — declares no options and is not searchable` |
+| A name in `mobile()->filters([...])` that matches no table filter | `{Resource}: filter [{name}] — declared in mobile()->filters() but no such table filter` |
+
+A refused filter is never on `/schema` and `?filter[thatname]=...` 422s with
+`Unknown filter [{name}].` on the list endpoint — the same "unpublished
+filter" answer a `->visible()`-hidden filter gets for a requester who cannot
+see it, so a probing client cannot tell "refused" from "hidden" from "never
+declared".
+
+### Remote filter options
+
+An over-cap static select, or a searchable select whose options are dynamic,
+publishes:
+
+```json
+{"optionsUrl":"/api/mobile-panel/{resource}/filter-options","searchable":true}
+```
+
+The authenticated client posts `{"filter":"status","q":"act"}` to that
+URL. The endpoint repeats the list endpoint's `viewAny`, `->visible()` and
+`mobile()->filters()` gates, then returns
+`{"options":[{"value":"active","label":"Active"}],"hasMore":false}`.
+Static lists are label-searched and remain fully whitelisted on submission;
+dynamic filters reuse Filament's own relationship/custom search callback and
+validate submitted values by arity because no complete option set exists.
+
+### Narrowing with `mobile()->filters([...])`
+
+By default every table filter that CAN be published, is. A resource that
+wants fewer opts in explicitly:
+
+```php
+public static function mobile(): MobileResource
+{
+    return MobileResource::make()->filters(['status']);
+}
+```
+
+A name narrowed away this way is not on `/schema` and `?filter[category]=...`
+422s exactly like a refused one — `category` still exists on the table, but
+mobile never asked for it.
+
+### The silent-divergence doctor line
+
+A filter that never reaches mobile — refused for any reason above, or
+narrowed away by `mobile()->filters([...])` — but whose `->default()` still
+applies on the web makes the mobile list observably **wider** than the
+panel's: the web silently narrows to that default on every page load, and
+mobile has no way to. `filament-mobile:doctor` names this on the same
+`Filters` section:
+
+```
+{Resource}: filter [{name}] carries a default but is not served on mobile —
+the mobile list will be wider than the panel's
+```
+
+Two more `Filters`-section diagnostics, both behavioural (this package
+cannot reflect Filament's `SelectFilter::$isStatic`, so it probes instead —
+applies the filter's own first option to a throwaway query and diffs the SQL
+against an untouched one):
+
+```
+{Resource}: filter [{name}] narrows nothing — is it ->static()?
+{Resource}: filter [{name}] threw when applied — {Exception}: {message}
+```
+
+The second is the more urgent of the two — the same throw hits the real list
+endpoint the moment a request applies that filter, and a `TrashedFilter` on a
+model with no `SoftDeletes` is the standing example: `baseQuery()` calls
+`withTrashed()` on a plain Builder, so `GET /{resource}` answers **500**.
+That is deliberate and pinned by a test. The web panel throws on the same
+table, so the 200 this endpoint served before P24 was mobile listing rows the
+panel cannot render at all. Do not "fix" it with a `try`/`catch` around
+`FilterApplier` — that fails OPEN, serving exactly the rows the broken filter
+was meant to hide. Fix the panel.
+
+And one more, from the publish seam rather than the probe — a `->default()`
+the filter's own options do not offer, dropped rather than published:
+
+```
+{Resource}: filter [{name}] default [{value}] is not one of its options —
+dropped, or every client would 422 on its first request
+```
+
+### The 422 matrix — and the real "clear" rule
+
+`?filter[name]=value` is validated against exactly what `/schema` published
+for that name — an unknown filter name, a list for a single-value filter, a
+scalar for a `->multiple()` one, or a value outside the published options,
+all 422 with a message naming the filter.
+
+**An empty scalar clears a filter — including a `->multiple()` one.** A
+query string cannot express an empty list, so `?filter[tags]=` (a bare,
+valued-but-empty parameter) is read as "any" for BOTH a single-value and a
+`->multiple()` filter, not as a type error. This is the one deliberate
+exception the matrix carries, and it is also the only way to override a
+filter's own `->default()` back to unfiltered on a single request.
+
+**"422 over silence" is a list-endpoint-only promise.** `?filter[...]` is
+silently IGNORED — never even read — on the relation endpoint
+(`GET /{resource}/{record}/{relation}`) and on the record endpoint
+(`GET /{resource}/{record}`). Neither validates it, applies it, or 422s on
+an unknown name; the query string parameter is simply not part of either
+contract.
+
+**A soft-deleted record's detail screen stays reachable while a write to it
+404s — a deliberate divergence, not a bug to chase.** `GET
+/{resource}/{record}` resolves through an EMPTY filter state
+(`isResolvingRecord: true`), so a `TrashedFilter`'s scope-stripping
+`baseQuery()` runs but its own `apply()` is skipped
+(`excludeWhenResolvingRecord()`) — a soft-deleted record is viewable at its
+own URL, matching the web panel.
+
+**"Empty filter state" is not "no filter narrows the record endpoint", and
+the gap is one filter kind wide.** A select's or ternary's `->default()` is
+genuinely skipped there — an empty `$data` makes a select no-op. A **bare
+`Filter`** is not: Filament pre-checks its `isActive` checkbox from
+`getDefaultState()` (`Filters/Filter::getFormField()`), so
+`Filter::make('x')->query(...)->default()` narrows record resolution too and
+`GET /{resource}/{record}` **404s** the rows it hides. That is what web's own
+`resolveTableRecord()` does, and it is pinned by a test.
+
+`PUT`/`DELETE {resource}/{record}` resolve
+through the resource's plain query instead, with no `FilterApplier`
+involvement at all, so the `SoftDeletingScope` is still active there: the
+same id 404s. A client that opens a detail screen and then tries to save
+must be ready for that save to 404 on a row it just displayed.
 
 ## Upload
 
@@ -653,8 +871,8 @@ because absence means a server predating repeater support and a client must
 never invent a capability the server did not declare; that rule only works
 while this server states the ordinary case explicitly.
 
-**Two things earn `readOnly: true`**, and the write path refuses on the
-same two predicates, so the published flag and the server's answer cannot
+**Three things earn `readOnly: true`**, and the write path refuses on the
+same three predicates, so the published flag and the server's answer cannot
 disagree:
 
 1. **A nested repeater** — a repeater inside another repeater's item
@@ -666,6 +884,11 @@ disagree:
    never-dehydrated field, or a **relation-write
    child whose `->dehydrated(true)` puts it back into the row's stored
    state**. See below; this is the one that would otherwise lose data.
+3. **A repeater containing a KeyValue with any restricted gate.** The
+   KeyValue permission check needs a trusted old/new map pair, but repeater
+   rows have no stable identity after insertion or removal. Refusing the
+   owning repeater avoids comparing with and authorizing against the wrong
+   stored row. An all-open nested KeyValue remains editable.
 
 A **relationship repeater** (`->relationship()`) is **editable** — its rows
 write through Filament's own `saveRelationships()`, below — with one refusal
@@ -729,8 +952,9 @@ relationship repeater at all; it still reports the shapes this slice
 legitimately does not support: a repeater containing a `live()` field (the
 item template is static — see below), a nested repeater (published
 `readOnly: true`; two levels of row coordinate is a different problem), a
-repeater with a child that would not round-trip (named child and all), and
-a relationship repeater whose gate cannot answer.
+repeater with a child that would not round-trip (named child and all), a
+repeater containing a restricted KeyValue (named child and missing row
+identity explained), and a relationship repeater whose gate cannot answer.
 
 **Per-item rules are published and enforced**, not merely published. A child
 component's own rules travel under `items.*.field` — `line_items.*.sku`,
@@ -1371,21 +1595,27 @@ open, publishing every field as editable regardless of what the panel
 configured. `SchemaWalker::config()` reads the correct four accessors, all
 defaulting to `true` to match Filament's own defaults.
 
-**The four gates are client hints, not enforced by the write path — say this
-plainly, because it is easy to assume otherwise.** `RuleExtractor` constrains
-`meta` to `array` and nothing more: a crafted request can add, remove or
-rename a key an `editableKeys: false` gate says it should not be able to,
-and the write path persists it verbatim. This matches Filament itself —
-the web panel's own dehydration never re-checks these flags either, so
-mobile is no looser than web — but it is a real gap from `disabled`, which
-this package **does** enforce (`WritableNames` refuses the whole field). It
-is left as a hint rather than built out: enforcing it needs the record's
-previously-stored keys at validation time to diff against (which keys were
-added, removed, or renamed), a different shape of rule than anything else
-this package validates, for a field with no reported misuse. An
-all-four-gates-`false` `KeyValue` is effectively read-only today and could
-join `WritableNames` using the same machinery `disabled` already uses, if a
-panel author ever reports relying on the gates as authorization.
+**The four gates are authoritative on every resource and relation create or
+update.** The server compares the submitted map with trusted form defaults on
+create and with the record's cast stored value on update:
+
+- `addable: false` rejects keys absent from the trusted map.
+- `deletable: false` rejects trusted keys missing from the submitted map.
+- `editableValues: false` rejects changes to values of keys present in both
+  maps; an allowed new pair may still receive its initial value.
+- `editableKeys: false` rejects a request that both removes and adds keys,
+  because a map has no row identity and that final shape may be a rename. A
+  pure add or remove still follows its own independent gate.
+
+An omitted field keeps its stored value or trusted default and needs no gate
+check. If a gate closure throws, the write fails closed with a field-keyed
+422. The ordinary validation rule remains `array`; the trusted-state diff is
+the separate operation-level permission check that an array rule cannot
+express. A JSON or relationship repeater containing a KeyValue with any
+restricted gate publishes the owning repeater as `readOnly`: repeater rows
+also have no stable wire identity, so pairing stored and submitted maps by
+list index after an insert/remove would enforce permissions against the wrong
+row. A nested KeyValue whose four gates are all open remains editable.
 
 ### Known weaknesses, stated now
 
@@ -1393,7 +1623,11 @@ panel author ever reports relying on the gates as authorization.
   never offered one for either array-valued field.
 - **No key-uniqueness validation.** A duplicate key entered on the phone
   collapses in the submitted map, exactly as it does on the web.
-- **The four gates are advisory**, per the paragraph above.
+- **A key rename is conservatively detected as add + remove.** A legitimate
+  combined add-and-remove request is also rejected when `editableKeys` is
+  false because the map wire shape cannot distinguish the two gestures.
+- **Restricted KeyValue fields make their owning repeater read-only.** This is
+  the fail-closed treatment for the repeater wire shape's missing row identity.
 
 ## Colour
 
@@ -1669,6 +1903,25 @@ A closure that returns something other than the `MobileCard` it was given —
 usually a block body missing its `return` — is refused by `relationCard()`
 itself, at declaration time.
 
+### Request-scoped discovery cache
+
+Building a relation manager's table headlessly is the expensive half of
+discovery. `RelationDiscovery` memoises that walk once per resource and
+relation-relevant `MobileResource` declaration inside a Laravel `scoped`
+binding. `/schema`, relation endpoints, and `filament-mobile:doctor` can
+therefore ask for the published and refused halves without constructing the
+same managers and tables twice.
+
+The cache is deliberately neither static nor process-wide. Laravel discards
+the scoped instance between HTTP requests and queue jobs, including under
+Octane, Swoole, and long-running workers, so a label or table declaration
+that depends on the current tenant, user, request, or locale cannot leak into
+the next one. The key fingerprints only declarations that affect discovery:
+relation cards plus relation search/sort/default-sort keys. Child-resource
+ownership is resolved after the cache against the caller's current
+`ResourceRegistry`; changing the registered resources can therefore change a
+relation from writable to read-only without re-running its table walk.
+
 ### Search and sort — host-declared per relation
 
 ```php
@@ -1801,8 +2054,8 @@ this is reported informationally, not as a refusal.
 - **The relation manager's own filters stay ignored, and its table's
   search/sort columns are never read.** Search and sort exist only where the
   host declares them per relation (Search and sort above); undeclared, the
-  list is in relation order, unfiltered. Filters are out permanently — the
-  resource level's `'filters' => []` ruling, inherited. A panel whose
+  list is in relation order, unfiltered. Resource table filters are supported,
+  but relation filters remain outside this slice. A panel whose
   relation manager is only usable with its filters gets a list that is
   technically correct and practically wrong.
 - **Only the first two columns become a card.** A relation whose meaning
@@ -1994,11 +2247,11 @@ model change fixes it:
 - **The conversion is memoised per request**, keyed by the raw string on the
   `RecordSerializer` instance — one serializer per request, so the memo's
   lifetime is the request's. Nulls are memoised too: a value whose conversion
-  degrades does not pay for its failure twice. The `RelationDiscovery::for()`
-  half of the caching pass this bullet used to promise was measured and
-  deliberately **not** done — the split already runs exactly once per
-  resource per request at every HTTP entry point, so there was no redundancy
-  left to remove.
+  degrades does not pay for its failure twice. Relation discovery now has its
+  own Laravel-scoped memo as described in the Relations section; the two
+  caches have different keys and lifetimes because one converts record values
+  inside a serializer while the other shares schema introspection between
+  consumers in one application scope.
 
 ## Dashboard
 
@@ -2158,6 +2411,37 @@ not something `/schema` can afford to let fail the whole document:
 its own formatting; this package does not use it to decide `direction` —
 that is read from its own key, independently.
 
+### Per-field direction
+
+A named form field or infolist entry can override the panel direction through
+the same attributes the Filament web panel already renders:
+
+```php
+TextInput::make('caption.ar')
+    ->extraInputAttributes(['dir' => 'rtl']);
+
+TextInput::make('caption.en')
+    ->extraInputAttributes(['dir' => 'ltr']);
+
+TextEntry::make('reference')
+    ->extraAttributes(['dir' => 'ltr']);
+```
+
+The node publishes `direction: "ltr"|"rtl"`. Input attributes win over
+universal extra attributes when both declare `dir`, matching browser
+specificity. Only those two literal values publish; `auto`, malformed values,
+and throwing closures are omitted safely and inherit `panel.direction`.
+This also works for named third-party/custom component classes through
+`extraAttributes()`—no package-specific type knowledge is required.
+
+Flutter applies the override at the `FieldRegistry`/`EntryRegistry` boundary,
+including before it invokes a host builder. Built-in controls, their overlay
+routes, repeater children, and host-custom renderers therefore receive a
+`BuildContext` already under the correct `Directionality`. Layout containers
+do not publish an override because the form renderer flattens them; put the
+attribute on each named field that needs it. Locale codes are never guessed:
+for chip-grouped `caption.ar`/`caption.en`, declare each direction explicitly.
+
 **The `/schema` `ETag` needed no change for any of this, and that is worth
 stating so nobody "fixes" it later.** The ETag is a `sha1` hash of the
 content actually built (see Schema caching, below) — once `locale` and
@@ -2223,6 +2507,100 @@ See `dart/filament_mobile/README.md`'s Schema caching section for the
 client half: the host-supplied `FilamentSchemaCache` and
 `FilamentConditionalTransport` ports, cold-start-render-then-revalidate, and
 the cache key's per-user scoping obligation.
+
+## Background refresh
+
+Background refresh is deliberately opt-in. The default is `false`, which
+publishes no `panel.poll` member and starts no client timers:
+
+```php
+// config/filament-mobile.php
+'poll' => true,
+
+// Or tune each surface independently, in seconds.
+'poll' => [
+    'lists' => 15,
+    'detail' => 15,
+    'dashboard' => 5,
+],
+```
+
+`true` publishes those same defaults. An array must contain positive integer
+seconds from 1 through 3600 for every supplied key; malformed configuration
+fails closed and publishes nothing. The resulting contract is:
+
+```json
+{
+  "panel": {
+    "poll": { "lists": 15, "detail": 15, "dashboard": 5 }
+  }
+}
+```
+
+The Flutter client treats these values as revalidation signals, not a second
+data path. It uses the ordinary authorized list, detail, and dashboard
+endpoints, pauses while backgrounded or while a route is covered, and pauses a
+list during reorder. Each of those GET endpoints returns a weak content
+`ETag`; a matching `If-None-Match` returns an empty 304. Hosts whose transport
+does not implement conditional GET still poll with normal GET requests.
+
+Polling alone requires no Reverb process, Redis, queue worker, or
+broadcast-channel authorization. A host that provisions those services can
+also enable private-channel invalidation:
+
+```php
+// App\Models\Order.php
+use Gait\FilamentMobile\BroadcastsMobileChanges;
+
+class Order extends Model
+{
+    use BroadcastsMobileChanges;
+}
+
+// OrderResource.php
+return MobileResource::make()
+    ->broadcasts();
+
+// config/filament-mobile.php
+'realtime' => true,
+```
+
+`true` derives the public key, host, port, and scheme from the active Reverb
+connection. An array may override `key`, `host`, `port`, `scheme` (`ws` or
+`wss`), and `authEndpoint`. Invalid settings or a non-Reverb active connection
+publish neither `panel.realtime` nor resource channels. The Reverb secret is
+never serialized.
+
+The package registers the `mobile.{resourceKey}` private-channel rule and
+authorizes it with the resource's existing `viewAny` policy. The host must
+still expose the authentication route under the same guard as the mobile API.
+For a Laravel 12 application using Sanctum, that is typically configured in
+`bootstrap/app.php`:
+
+```php
+->withBroadcasting(
+    __DIR__.'/../routes/channels.php',
+    ['middleware' => ['api', 'auth:sanctum']],
+)
+```
+
+The host must also operate Reverb and a queue worker: model changes are queued
+after the surrounding database transaction commits. Run
+`php artisan filament-mobile:doctor` in deployment CI; it fails for an
+enabled resource without the model trait, ambiguous resource ownership,
+invalid Reverb configuration, or a missing/incorrectly guarded broadcast-auth
+route.
+
+Events are named `filament-mobile.changed` and carry only `{key, id, event}`.
+They never contain model attributes. Flutter re-fetches the existing
+authorized endpoint before displaying a change. Mobile writes should pass the
+socket client's current id as `X-Socket-ID`; the model trait then suppresses
+the originating socket's duplicate event. Resource channels reveal that some
+record changed, including a record later hidden by tenant query scope. For
+strict tenant-isolation requirements, use tenant-specific channels instead of
+this resource-wide opt-in.
+
+Keep `poll` enabled alongside realtime for a bounded connection-gap watchdog.
 
 ## Authorization
 
@@ -2304,16 +2682,26 @@ Measured against a real 35-resource production panel.
   is **authoritative**, evaluated against real submitted values. A client may
   use `/schema`'s `hidden` to avoid rendering an obviously conditional field on
   first paint, but must not treat it as truth.
-- **`DELETE` runs the model's delete, not Filament's `DeleteAction`.** So a
-  resource's `DeleteAction::before()`/`after()` hooks and its
-  "restrict if related records exist" guard do **not** run for a mobile delete
-  — those live on the action, which is a Livewire construct this package does
-  not host. Model observers, soft deletes and policies are unaffected: they
-  hang off `$record->delete()` and run exactly as they do in the panel. The
-  pilot measured 1 of 33 resources affected (a `before()` hook with an
-  external side effect, so a mobile delete skips it). If a
-  resource depends on an action hook, move that logic to an observer and both
-  panels get it.
+- **`DELETE` cannot execute Filament's Livewire `DeleteAction`, but it has an
+  explicit mobile lifecycle.** Model observers remain the preferred home for
+  behavior web and mobile must always share. When resource-local behavior is
+  required, declare `beforeDelete()`, `deleteUsing()`, and/or `afterDelete()`
+  on `mobile()`; the same transaction-backed lifecycle runs for top-level and
+  relation-row deletes. `deleteUsing()` receives the record and the default
+  zero-argument model deleter, and returning `false` refuses with HTTP 409 and
+  rolls the transaction back. Example:
+
+  ```php
+  return MobileResource::make()
+      ->beforeDelete(fn (Template $record) => $meta->retire($record))
+      ->deleteUsing(fn (Template $record, Closure $delete) => $delete())
+      ->afterDelete(fn (Template $record) => audit('deleted', $record));
+  ```
+
+  A web-only "restrict if related records exist" action guard is still not
+  inferred automatically; reproduce it in `deleteUsing()` or, preferably, in
+  the policy/model layer. Soft deletes, observers, cascades, and policies
+  continue to run through the default deleter.
 - **Multi-valued relationship fields sync, with one deliberate asymmetry.**
   `Select::multiple()->relationship()` and `CheckboxList->relationship()` are
   saved through Filament's own `saveRelationships()` after the attribute
@@ -2324,9 +2712,10 @@ Measured against a real 35-resource production panel.
   Singular relationship **containers** (`Section::make()->relationship()`)
   are still not saved and stay published `disabled: true`.
 - **Dates are ISO-8601 UTC.** The panel's display format does not travel.
-- **`filters` is always `[]`.** Table filters are not introspected — at the
-  resource level, and per relation (which inherits the ruling permanently;
-  relation search and sort are host declarations instead — see Relations).
+- **Relation `filters` is always `[]`.** Resource tables publish supported
+  select and ternary filters (see Filters), while relation filters remain
+  unexposed; relation search and sort are host declarations instead (see
+  Relations).
 - **Tabs are flattened to sections** — deliberately; tabs are a poor phone
   control. A `Tabs` container's own name may surface as a label.
 - **`helperText` is always `null`.** Filament exposes no public getter for it on
@@ -2342,27 +2731,6 @@ Measured against a real 35-resource production panel.
   host that translates nothing still shows an Arabic hint in front of an
   Arabic panel; `FilamentStrings` remains only as the client's per-rule
   fallback for a rule the server sent no message for.
-- **A crafted payload that flips a gate closed can silently discard a
-  legitimate write.** `store()`/`update()` settle the schema against trusted
-  state before extracting rules (`Write\SettledSchema`), and the allow-set
-  only ever shrinks — so a stored `kind='unlock'` (a `Hidden`, gate open) with
-  a PUT of `{"kind":"promo","gate_note":"..."}` gets a `200` with `gate_note`
-  discarded rather than a clear rejection. Reachability is low: a client never
-  learns `kind`, so it has to invent a contradicting value for a field it was
-  never shown. See the `ponytail:` note at
-  `MobilePanelController::allowedRules()`.
-- **A form with an unreasonable number of chained gates can 500 on
-  `/state`.** `SettledSchema`'s fixpoint is bounded at 32 passes and fails
-  closed rather than write against state it cannot vouch for; that bound is
-  not a class invariant but roughly the count of writable field names, so a
-  form with more than 31 chained gates could hit it legitimately. See the
-  `ponytail:` note at `Write\SettledSchema::settle()`.
-- **A top-level `->hidden()->dehydratedWhenHidden()` field is dropped by the
-  write path, though it is genuinely writable.** `/state` reports it because
-  it walks with `getComponents(withHidden: true)`; `store()`/`update()` do not,
-  so the field never reaches `SettledSchema` or the rule extractor and a
-  submitted value for it is silently never written. Exotic shape; see the
-  `ponytail:` note at `MobilePanelController::formComponents()`.
 
 ## Testing
 

@@ -121,6 +121,11 @@ final class ComponentTypeMap
         // walker publishes it editable, and RuleExtractor mints it as a
         // relation-write leaf with no rule, so the rows never touch a column.
         'Filament\\Forms\\Components\\Repeater' => 'repeater',
+        // Optional plugins are mapped by class name so this package keeps no
+        // runtime dependency on either one. Their development dependencies
+        // exercise the real getters in the compatibility matrix.
+        'Dotswan\\MapPicker\\Fields\\Map' => 'map_point',
+        'Ysfkaya\\FilamentPhoneInput\\Forms\\PhoneInput' => 'phone',
 
         // Layout
         'Filament\\Schemas\\Components\\Section' => 'section',
@@ -156,6 +161,7 @@ final class ComponentTypeMap
         // (SchemaWalker::config()'s default `[]` fallthrough). See TagFields
         // for the shared `isSpatieTags()`/`typeOf()` classification.
         'Filament\\Infolists\\Components\\SpatieTagsEntry' => 'tags_entry',
+        'Dotswan\\MapPicker\\Infolists\\MapEntry' => 'map_point_entry',
     ];
 
     /**
@@ -194,11 +200,10 @@ final class ComponentTypeMap
      * The host's own mappings, consulted before the built-in map.
      *
      * A real panel uses components this package has never heard of — the
-     * pilot found `Ysfkaya\FilamentPhoneInput` and `Guava\IconPicker`, and any
-     * panel grows more. Hard-coding them would make this package track class
-     * names in repositories it has no dependency on and cannot version-check,
-     * and the next panel with a different phone-input package would be blocked
-     * again with no recourse but a pull request.
+     * pilot found Guava's IconPicker, and any panel grows more. A small number
+     * of explicitly supported optional plugins (map picker and PhoneInput)
+     * have first-class entries above, still referenced by FQCN so they are not
+     * runtime dependencies. Everything else needs this host escape hatch.
      *
      * Host entries win, so a panel can also override a built-in it disagrees
      * with. A value that is not a type this contract defines is ignored: a typo

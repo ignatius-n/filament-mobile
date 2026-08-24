@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Gait\FilamentMobile\Http\DashboardController;
+use Gait\FilamentMobile\Http\FilterOptionsController;
 use Gait\FilamentMobile\Http\MobilePanelController;
 use Gait\FilamentMobile\Http\OptionsController;
 use Gait\FilamentMobile\Http\RelationController;
@@ -33,6 +34,7 @@ Route::prefix(config('filament-mobile.prefix'))
         Route::post('{resource}/state', StateController::class)->name('state');
         // Same reason, same placement: `options` is a literal, not a record id.
         Route::post('{resource}/options', OptionsController::class)->name('options');
+        Route::post('{resource}/filter-options', FilterOptionsController::class)->name('filter-options');
         // A literal segment, like `state` and `options` — above the record
         // wildcard so `upload` is never captured as a record id.
         Route::post('{resource}/upload', UploadController::class)->name('upload');

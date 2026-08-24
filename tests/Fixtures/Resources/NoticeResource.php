@@ -40,15 +40,17 @@ class NoticeResource extends Resource
     {
         return $schema->components([
             TextInput::make('title'),
-            TextInput::make('caption.ar'),
-            TextInput::make('caption.en'),
+            TextInput::make('caption.ar')->extraInputAttributes(['dir' => 'rtl']),
+            TextInput::make('caption.en')
+                ->extraAttributes(['dir' => 'rtl'])
+                ->extraInputAttributes(['dir' => 'ltr']),
         ]);
     }
 
     public static function infolist(Schema $schema): Schema
     {
         return $schema->components([
-            TextEntry::make('title'),
+            TextEntry::make('title')->extraAttributes(['dir' => 'rtl']),
         ]);
     }
 }

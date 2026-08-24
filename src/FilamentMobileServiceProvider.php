@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Gait\FilamentMobile;
 
+use Gait\FilamentMobile\Introspection\RelationDiscoveryMemo;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Facades\Broadcast;
 
 class FilamentMobileServiceProvider extends ServiceProvider
 {
@@ -25,6 +27,13 @@ class FilamentMobileServiceProvider extends ServiceProvider
         }
 
         $this->mergeConfigFrom(__DIR__ . '/../config/filament-mobile.php', 'filament-mobile');
+
+        // One relation-introspection memo per request / queue job. `scoped`,
+        // rather than a singleton or static, is what makes this safe under
+        // Octane, Swoole, and long-running queue workers: Laravel flushes the
+        // instance at the scope boundary, so user/tenant/locale-dependent
+        // table declarations cannot leak into the next request.
+        $this->app->scoped(RelationDiscoveryMemo::class);
     }
 
     public function boot(): void
@@ -34,6 +43,13 @@ class FilamentMobileServiceProvider extends ServiceProvider
         ], 'filament-mobile-config');
 
         $this->loadRoutesFrom(__DIR__ . '/Http/routes.php');
+
+        // Registers the channel rule only; the host remains responsible for
+        // exposing `/broadcasting/auth` under its API/mobile guard.
+        Broadcast::channel(
+            'mobile.{resourceKey}',
+            fn ($user, string $resourceKey): bool => Realtime::authorizes($user, $resourceKey),
+        );
 
         if ($this->app->runningInConsole()) {
             $this->commands([Console\DoctorCommand::class]);

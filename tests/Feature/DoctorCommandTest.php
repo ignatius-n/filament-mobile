@@ -206,6 +206,15 @@ it('names the child that cost a repeater its editability, informationally', func
         ->assertExitCode(0);
 });
 
+it('names restricted keyvalue children that make json and relationship repeaters read-only', function () {
+    config()->set('filament-mobile.resources', [RepeaterProblemResource::class]);
+
+    $this->artisan('filament-mobile:doctor')
+        ->expectsOutputToContain('RepeaterProblemResource.restricted_map_rows: child `meta` has restricted KeyValue permissions')
+        ->expectsOutputToContain('RepeaterProblemResource.restricted_relation_rows: child `meta` has restricted KeyValue permissions')
+        ->assertExitCode(0);
+});
+
 it('does not report the outer half of a nested repeater as nested itself', function () {
     // Only the INNER repeater is inside another repeater's item template;
     // the outer one is an ordinary top-level repeater and must not also be

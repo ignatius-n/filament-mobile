@@ -39,6 +39,32 @@ it('leaves a non-live field unmarked', function () {
     expect($nodes[0]['live'])->toBeFalse();
 });
 
+it('publishes a closed per-field direction with input attributes taking precedence', function () {
+    $nodes = walk([
+        TextInput::make('caption')
+            ->extraAttributes(['dir' => 'ltr'])
+            ->extraInputAttributes(['dir' => 'rtl']),
+        Toggle::make('active')->extraAttributes(['dir' => 'ltr']),
+        TextInput::make('automatic')->extraInputAttributes(['dir' => 'auto']),
+    ]);
+
+    expect($nodes[0]['direction'])->toBe('rtl')
+        ->and($nodes[1]['direction'])->toBe('ltr')
+        ->and($nodes[2])->not->toHaveKey('direction');
+});
+
+it('falls back to universal direction when input attributes cannot be evaluated', function () {
+    $warnings = new WalkWarnings();
+    $nodes = (new SchemaWalker($warnings))->walk([
+        TextInput::make('caption')
+            ->extraAttributes(['dir' => 'rtl'])
+            ->extraInputAttributes(fn () => throw new RuntimeException('boom')),
+    ], 'TestResource');
+
+    expect($nodes[0]['direction'])->toBe('rtl')
+        ->and($warnings->all())->toHaveCount(1);
+});
+
 it('inlines statically resolvable select options', function () {
     $nodes = walk([
         Select::make('status')->options(['active' => 'نشط', 'banned' => 'محظور']),

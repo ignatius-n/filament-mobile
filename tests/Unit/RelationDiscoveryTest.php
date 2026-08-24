@@ -6,12 +6,17 @@ use Filament\Resources\RelationManagers\RelationGroup;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Gait\FilamentMobile\Introspection\RelationDiscovery;
+use Gait\FilamentMobile\Introspection\RelationDiscoveryMemo;
+use Gait\FilamentMobile\MobileCard;
+use Gait\FilamentMobile\MobileResource;
+use Gait\FilamentMobile\ResourceRegistry;
 use Gait\FilamentMobile\Tests\Fixtures\Relations\BannersRelationManager;
 use Gait\FilamentMobile\Tests\Fixtures\Relations\ExplodingBannersRelationManager;
 use Gait\FilamentMobile\Tests\Fixtures\Relations\HiddenBannersRelationManager;
 use Gait\FilamentMobile\Tests\Fixtures\Relations\NarrowedBannersRelationManager;
 use Gait\FilamentMobile\Tests\Fixtures\Relations\Nested\NarrowedBannersRelationManager as NestedNarrowedBannersRelationManager;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\CompanyResource;
+use Gait\FilamentMobile\Tests\Fixtures\Resources\BannerResource;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\GroupedCompanyResource;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\NarrowedCompanyResource;
 
@@ -156,9 +161,128 @@ it('still finds the Table property the narrowing refusal reflects on', function 
     );
 });
 
+it('walks a relation table once across published and refusal reads in one request scope', function () {
+    CountingBannersRelationManager::$tableCalls = 0;
+    app()->forgetScopedInstances();
+
+    // ResourceRegistry builds a fresh declaration object on every pass. Two
+    // equivalent objects must still share the discovery result; object-id
+    // caching would miss this exact production path.
+    $firstDeclaration = MobileResource::make();
+    $equivalentDeclaration = MobileResource::make();
+
+    expect(RelationDiscovery::for(
+        CountingCompanyResource::class,
+        $firstDeclaration,
+        new ResourceRegistry(),
+    ))->toHaveCount(1)
+        ->and(RelationDiscovery::refusalsFor(
+            CountingCompanyResource::class,
+            $equivalentDeclaration,
+        ))->toBeEmpty()
+        ->and(CountingBannersRelationManager::$tableCalls)->toBe(1);
+});
+
+it('splits the memo when a relation declaration changes', function () {
+    CountingBannersRelationManager::$tableCalls = 0;
+    $memo = new RelationDiscoveryMemo();
+    $withName = MobileResource::make()
+        ->relationCard('banners', fn (MobileCard $card): MobileCard => $card->title('name'));
+    $withStatus = MobileResource::make()
+        ->relationCard('banners', fn (MobileCard $card): MobileCard => $card->title('status'));
+
+    $first = RelationDiscovery::for(
+        CountingCompanyResource::class,
+        $withName,
+        new ResourceRegistry(),
+        $memo,
+    );
+    $second = RelationDiscovery::for(
+        CountingCompanyResource::class,
+        $withStatus,
+        new ResourceRegistry(),
+        $memo,
+    );
+
+    expect($first[0]['card']->toArray()['title']['field'])->toBe('name')
+        ->and($second[0]['card']->toArray()['title']['field'])->toBe('status')
+        ->and(CountingBannersRelationManager::$tableCalls)->toBe(2);
+});
+
+it('keeps child-resource resolution outside the discovery memo', function () {
+    CountingBannersRelationManager::$tableCalls = 0;
+    $memo = new RelationDiscoveryMemo();
+    $mobile = MobileResource::make();
+
+    config()->set('filament-mobile.resources', [
+        CountingCompanyResource::class,
+        BannerResource::class,
+    ]);
+
+    $singleOwner = RelationDiscovery::for(
+        CountingCompanyResource::class,
+        $mobile,
+        new ResourceRegistry(),
+        $memo,
+    );
+
+    config()->set('filament-mobile.resources', [
+        CountingCompanyResource::class,
+        BannerResource::class,
+        AlternateBannerResource::class,
+    ]);
+
+    $ambiguousOwner = RelationDiscovery::for(
+        CountingCompanyResource::class,
+        $mobile,
+        new ResourceRegistry(),
+        $memo,
+    );
+
+    expect($singleOwner[0]['resource'])->toBe(BannerResource::class)
+        ->and($ambiguousOwner[0]['resource'])->toBeNull()
+        ->and(CountingBannersRelationManager::$tableCalls)->toBe(1);
+});
+
+it('registers the discovery memo as a flushable Laravel scope', function () {
+    $first = app(RelationDiscoveryMemo::class);
+
+    expect(app(RelationDiscoveryMemo::class))->toBe($first);
+
+    app()->forgetScopedInstances();
+    $next = app(RelationDiscoveryMemo::class);
+
+    expect($next)->not->toBe($first);
+});
+
 class TitledBannersRelationManager extends BannersRelationManager
 {
     protected static ?string $title = 'Active banners';
+}
+
+class CountingBannersRelationManager extends BannersRelationManager
+{
+    public static int $tableCalls = 0;
+
+    public function table(Table $table): Table
+    {
+        self::$tableCalls++;
+
+        return parent::table($table);
+    }
+}
+
+class CountingCompanyResource extends CompanyResource
+{
+    public static function getRelations(): array
+    {
+        return [CountingBannersRelationManager::class];
+    }
+}
+
+class AlternateBannerResource extends BannerResource
+{
+    protected static ?string $slug = 'alternate-banners';
 }
 
 class RecordTitledBannersRelationManager extends BannersRelationManager

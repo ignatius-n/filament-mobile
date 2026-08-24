@@ -10,7 +10,8 @@ it('deletes a record the policy permits', function () {
         ->assertNoContent();
 
     expect(Gait\FilamentMobile\Tests\Fixtures\Models\Banner::query()
-        ->whereKey($banner->id)->exists())->toBeFalse();
+        ->whereKey($banner->id)->exists())->toBeFalse()
+        ->and($banner->company->fresh()->name)->toBe('mobile delete: after');
 });
 
 it('403s when the RECORD policy denies delete, leaving the record intact', function () {

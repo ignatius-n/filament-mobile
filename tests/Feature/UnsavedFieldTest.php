@@ -52,7 +52,7 @@ it('never writes a field whose dehydration closure takes no state', function () 
  * every accessor throws and the guard fails open. On the pilot panel that
  * field was `password`, and this request blanked the stored hash.
  */
-it('honours a state-dependent dehydration closure on a nested field', function () {
+it('refuses a submitted nested field when its dehydration closure closes', function () {
     $banner = seedBanner('Nested');
     $banner->update(['secret_note' => 'kept']);
 
@@ -62,7 +62,8 @@ it('honours a state-dependent dehydration closure on a nested field', function (
             'body_html' => '<p>Body</p>',
             'secret_note' => '',
         ])
-        ->assertOk();
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('secret_note');
 
     expect($banner->fresh()->secret_note)->toBe('kept');
 });

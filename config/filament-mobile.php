@@ -25,6 +25,21 @@ return [
     // the package unusable in a bilingual app.
     'middleware' => ['api'],
 
+    // Opt-in background revalidation for open Flutter screens. False means
+    // no timers and preserves the pre-P20 behavior. Set true for Filament-like
+    // defaults, or override individual positive intervals in seconds:
+    // ['lists' => 15, 'detail' => 15, 'dashboard' => 5]. The app pauses in
+    // the background and while its route is not current; list polling also
+    // pauses during drag-to-reorder.
+    'poll' => false,
+
+    // Optional Reverb change signals. False publishes no connection or
+    // resource channels. True derives the public client settings from the
+    // active `broadcasting.connections.reverb` connection; an array may
+    // override key, host, port, scheme (ws/wss), and authEndpoint. The active
+    // broadcast connection must still be Reverb. Secrets are never published.
+    'realtime' => false,
+
     // Explicit resource list. Null (the default) reads the registered Filament
     // panel, so resources are never listed twice. Set an array only where no
     // panel is booted — or to serve a deliberate subset.
@@ -52,7 +67,6 @@ return [
     // override one it disagrees with. `filament-mobile:doctor` prints the exact
     // line to paste for anything it finds unmapped.
     //
-    //     \Ysfkaya\FilamentPhoneInput\Forms\PhoneInput::class => 'text',
     //     \Guava\IconPicker\Forms\Components\IconPicker::class => 'select',
     'types' => [],
 ];

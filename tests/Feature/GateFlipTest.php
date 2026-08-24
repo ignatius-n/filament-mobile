@@ -196,13 +196,14 @@ it('reports a gate as open when trusted state opens it', function () {
     expect($find($components, 'gate_note')['disabled'])->toBeFalse();
 });
 
-it('reports a field the shrink-only allow-set refused, not what the last build says', function () {
+it('reports and rejects a field the shrink-only allow-set refused, not what the last build says', function () {
     // The residual MobilePanelController::allowedRules() documents, seen from
     // /state. Stored `kind` opens the gate; the payload closes it with a value
     // that is never written, so pass 1 drops `gate_note` and the reset then
     // restores `kind` — the FINAL build reports the field writable again about
     // a value the client never sent. The write refuses it (shrink-only), so
-    // /state must draw it locked. Reading `disabled` off the last build alone
+    // /state must draw it locked, and the write must return a field-keyed 422
+    // instead of a false 200. Reading `disabled` off the last build alone
     // reopens the divergence from the other side.
     $banner = seedBannerWith(['kind' => 'unlock', 'gate_note' => 'original']);
     $user = makeUser('admin');
@@ -236,7 +237,8 @@ it('reports a field the shrink-only allow-set refused, not what the last build s
 
     $this->actingAs($user)
         ->putJson("/api/mobile-panel/banners/{$banner->id}", $crafted)
-        ->assertOk();
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['gate_note']);
 
     expect($banner->fresh()->gate_note)->toBe('original');
 });

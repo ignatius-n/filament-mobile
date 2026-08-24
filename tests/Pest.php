@@ -123,6 +123,24 @@ function requestAs(User $user): Request
     return $request;
 }
 
+/** Enables a complete public Reverb connection for realtime contract tests. */
+function enableTestRealtime(array $overrides = []): void
+{
+    config()->set('filament-mobile.tests.banner_broadcasts', true);
+    config()->set('broadcasting.default', 'reverb');
+    config()->set('broadcasting.connections.reverb', [
+        'driver' => 'reverb',
+        'key' => 'public-app-key',
+        'secret' => 'never-publish-this',
+        'options' => [
+            'host' => 'ws.example.test',
+            'port' => 443,
+            'scheme' => 'https',
+        ],
+    ]);
+    config()->set('filament-mobile.realtime', $overrides === [] ? true : $overrides);
+}
+
 function seedBanner(string $name = 'Banner', string $status = 'active', ?array $options = null): Banner
 {
     return seedBannerWith(['name' => $name, 'status' => $status, 'options' => $options]);

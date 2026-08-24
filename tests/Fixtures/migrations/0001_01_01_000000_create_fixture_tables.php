@@ -64,6 +64,9 @@ return new class extends Migration
             // constraint this fixture would then have to satisfy everywhere.
             $table->text('body_html')->nullable();
             $table->string('contact_email')->nullable();
+            $table->json('location')->nullable();
+            $table->string('phone')->nullable();
+            $table->string('phone_country', 2)->nullable();
             // Never referenced by the card or the infolist: it is the column
             // the serialisation whitelist has to keep out of the payload.
             $table->text('internal_note')->nullable();

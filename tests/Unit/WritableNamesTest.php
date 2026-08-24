@@ -37,6 +37,14 @@ it('does not name a Hidden field', function () {
     ]))->toBe(['name']);
 });
 
+it('names a hidden field that explicitly dehydrates while hidden', function () {
+    expect(WritableNames::of([
+        TextInput::make('internal_note')
+            ->hidden()
+            ->dehydratedWhenHidden(),
+    ]))->toBe(['internal_note']);
+});
+
 it('names a single-file upload field', function () {
     // P6a: RuleExtractor's file withholding narrowed to multiple-only, so a
     // single-file field's stored PATH (a string — never bytes, which travel

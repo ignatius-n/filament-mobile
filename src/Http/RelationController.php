@@ -7,6 +7,7 @@ namespace Gait\FilamentMobile\Http;
 use Filament\Facades\Filament;
 use Gait\FilamentMobile\Introspection\FormDefaults;
 use Gait\FilamentMobile\Introspection\MediaFields;
+use Gait\FilamentMobile\Introspection\MapFields;
 use Gait\FilamentMobile\Introspection\RelationDiscovery;
 use Gait\FilamentMobile\Introspection\RichContentAdapter;
 use Gait\FilamentMobile\Introspection\TagFields;
@@ -17,6 +18,8 @@ use Gait\FilamentMobile\MobileResource;
 use Gait\FilamentMobile\PanelSchemaBuilder;
 use Gait\FilamentMobile\ResourceRegistry;
 use Gait\FilamentMobile\Write\RecordForm;
+use Gait\FilamentMobile\Write\DeleteRefusedException;
+use Gait\FilamentMobile\Write\RecordDeleter;
 use Gait\FilamentMobile\Write\WritableNames;
 use Gait\MobileCore\Authorizer;
 use Gait\MobileCore\ListQuery;
@@ -77,6 +80,7 @@ final class RelationController
         // `relationPaths()`, so without an explicit `media` eager load it
         // lazy-loads once per row here too.
         $cardMediaPaths = $this->cardMediaPaths($published['resource'], $card);
+        $cardMapPaths = $this->cardMapPaths($published['resource'], $card);
 
         // Same reasoning, for the tags read-path twin of the media N+1
         // defence above.
@@ -137,6 +141,7 @@ final class RelationController
             new RichContentAdapter(),
             new TagSeparatorAdapter(),
         ))->withMediaPaths($cardMediaPaths)
+            ->withMapPointPaths($cardMapPaths)
             ->withTagPaths($cardTagPaths);
 
         return response()->json([
@@ -174,14 +179,16 @@ final class RelationController
             403,
         );
 
+        $trusted = FormDefaults::fromComponents(
+            RecordForm::components($childClass, [], record: null),
+        );
+
         $settled = SettledSchema::settle(
             submitted: $request->all(),
             // The child form's own defaults are the trusted state on create,
             // from an EMPTY state — exactly as store() settles, for exactly
             // its reasons.
-            trusted: FormDefaults::fromComponents(
-                RecordForm::components($childClass, [], record: null),
-            ),
+            trusted: $trusted,
             build: function (array $state) use ($childClass): array {
                 $components = RecordForm::components($childClass, $state, record: null);
 
@@ -191,10 +198,14 @@ final class RelationController
 
         $components = $settled->components();
 
+        RecordForm::rejectRefusedSubmitted($settled, $request->all());
+
         $validated = $request->validate(
             RecordForm::rules($settled),
             attributes: RecordForm::validationAttributes($settled),
         );
+
+        RecordForm::enforceKeyValuePermissions($settled, $validated, $trusted);
 
         // Through the relationship, so the foreign key (or the pivot) is the
         // parent's by construction — a row is never created floating and then
@@ -234,9 +245,11 @@ final class RelationController
         // The child's stored values sit under the payload, exactly as
         // update() settles: a partial PUT that does not resend a sibling must
         // still resolve gates that read it.
+        $trusted = $childRecord->attributesToArray();
+
         $settled = SettledSchema::settle(
             submitted: [...$childRecord->attributesToArray(), ...$request->all()],
-            trusted: $childRecord->attributesToArray(),
+            trusted: $trusted,
             build: function (array $state) use ($childClass, $childRecord): array {
                 $components = RecordForm::components($childClass, $state, $childRecord);
 
@@ -246,10 +259,14 @@ final class RelationController
 
         $rules = RecordForm::rules($settled);
 
+        RecordForm::rejectRefusedSubmitted($settled, $request->all());
+
         $validated = $request->validate(
             $rules,
             attributes: RecordForm::validationAttributes($settled),
         );
+
+        RecordForm::enforceKeyValuePermissions($settled, $validated, $trusted);
 
         // The same dotted-path fill and TagSeparators mirror update()
         // applies, at what is now the fourth write seam — see RecordForm.
@@ -272,13 +289,14 @@ final class RelationController
      * divergence: the relation client holds a LIST it must reconcile, and
      * the design spec fixes this shape.)
      *
-     * The model's delete, NOT Filament's DeleteAction — the same known delta
-     * destroy() documents: Livewire hooks do not run here, observers, soft
-     * deletes and cascades do, and the policy was already checked above.
+     * Through the CHILD resource's explicit mobile delete lifecycle, the same
+     * path resource-level destroy() runs. Filament's Livewire action itself is
+     * not hosted, but mobile before/using/after hooks, observers, soft deletes,
+     * cascades, and the policy above all apply.
      */
     public function destroy(Request $request, string $resource, string $record, string $relation, string $child): JsonResponse
     {
-        [, $published, , $relationship, $related] = $this->resolve($request, $resource, $record, $relation, forWrite: true);
+        [$childClass, $published, , $relationship, $related] = $this->resolve($request, $resource, $record, $relation, forWrite: true);
 
         $childRecord = $this->resolveChild($relationship, $related, $child);
 
@@ -291,7 +309,11 @@ final class RelationController
         // attributes can no longer be trusted to read back the same.
         $data = $this->rowSerializer($published, $related)->serialize($childRecord);
 
-        $childRecord->delete();
+        try {
+            RecordDeleter::delete($childClass::mobile(), $childRecord);
+        } catch (DeleteRefusedException $e) {
+            abort(409, $e->getMessage());
+        }
 
         return response()->json(['data' => $data]);
     }
@@ -421,6 +443,7 @@ final class RelationController
             new RichContentAdapter(),
             new TagSeparatorAdapter(),
         ))->withMediaPaths($this->cardMediaPaths($published['resource'], $published['card']))
+            ->withMapPointPaths($this->cardMapPaths($published['resource'], $published['card']))
             ->withTagPaths($this->cardTagPaths($published['resource'], $published['card']));
     }
 
@@ -451,6 +474,21 @@ final class RelationController
         ];
 
         return array_intersect_key($paths, array_flip($card->fieldPaths()));
+    }
+
+    /** @param class-string|null $class @return list<string> */
+    private function cardMapPaths(?string $class, MobileCard $card): array
+    {
+        if ($class === null) {
+            return [];
+        }
+
+        $paths = [
+            ...MapFields::pathsIn($this->builder->schemaComponents($class, 'infolist')),
+            ...MapFields::pathsIn($this->builder->schemaComponents($class, 'form')),
+        ];
+
+        return array_values(array_intersect(array_unique($paths), $card->fieldPaths()));
     }
 
     /**

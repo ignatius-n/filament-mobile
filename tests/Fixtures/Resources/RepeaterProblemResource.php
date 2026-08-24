@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Gait\FilamentMobile\Tests\Fixtures\Resources;
 
 use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
@@ -73,6 +74,14 @@ class RepeaterProblemResource extends Resource
                     TextInput::make('sku'),
                     Hidden::make('id'),
                 ]),
+            // KeyValue permissions require a trusted old/new map comparison.
+            // A repeater item has no stable wire identity, so both the JSON
+            // and relationship forms fail closed at the owning repeater.
+            Repeater::make('restricted_map_rows')
+                ->schema([KeyValue::make('meta')->editableValues(false)]),
+            Repeater::make('restricted_relation_rows')
+                ->relationship('tags')
+                ->schema([KeyValue::make('meta')->addable(false)]),
         ]);
     }
 }

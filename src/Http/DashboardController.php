@@ -54,6 +54,6 @@ final class DashboardController
             $body['_warnings'] = $warnings->all();
         }
 
-        return response()->json($body);
+        return ConditionalJson::respond($request, $body);
     }
 }

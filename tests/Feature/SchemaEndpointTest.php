@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 use Gait\FilamentMobile\Tests\Fixtures\Resources\BannerResource;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\BrokenGroupResource;
+use Gait\FilamentMobile\Tests\Fixtures\Resources\FilteredResource;
+use Gait\FilamentMobile\Tests\Fixtures\Resources\NarrowedFilterResource;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\PostResource;
 use Gait\FilamentMobile\Tests\Fixtures\Resources\TagResource;
+use Gait\FilamentMobile\Tests\Fixtures\Resources\TableFiltersResource;
 
 // Testbench tears down the test database via `migrate:rollback` after every
 // test. The production test below flips the app environment and never flips
@@ -517,6 +520,58 @@ describe('resource badge', function () {
         ]);
 
         expect(resourceBlock('companies'))->not->toHaveKey('badge');
+    });
+});
+
+describe('resource filters', function () {
+    it('publishes a table select filter on the resource block', function () {
+        config()->set('filament-mobile.resources', [FilteredResource::class]);
+
+        expect(resourceBlock('filtered')['filters'])->toBe([
+            [
+                'type' => 'select',
+                'name' => 'status',
+                'label' => 'Status',
+                'config' => ['options' => [
+                    ['value' => 'draft', 'label' => 'Draft'],
+                    ['value' => 'published', 'label' => 'Published'],
+                ]],
+            ],
+        ]);
+    });
+
+    it('carries filters: [] when the resource declares none', function () {
+        // BannerResource's table() declares no filters at all — the key
+        // stays present and empty, the same rule `relations` already
+        // follows, so a client never has to branch on the key's absence.
+        expect(resourceBlock('banners')['filters'])->toBe([]);
+    });
+
+    it('narrows to only the names mobile()->filters() opts into', function () {
+        // NarrowedFilterResource's table declares status + category, but
+        // mobile()->filters(['status', 'nope']) opts in only status —
+        // category is silently excluded, and the unresolvable "nope" name
+        // never reaches the wire (doctor reports it separately).
+        config()->set('filament-mobile.resources', [NarrowedFilterResource::class]);
+
+        $filters = resourceBlock('narrowed-filters')['filters'];
+
+        expect($filters)->toHaveCount(1)
+            ->and($filters[0]['name'])->toBe('status');
+    });
+
+    it('publishes remote option URLs for large and dynamic filters', function () {
+        config()->set('filament-mobile.resources', [TableFiltersResource::class]);
+
+        $filters = collect(resourceBlock('table-filters')['filters'])->keyBy('name');
+
+        expect($filters['too_many']['config'])->toBe([
+            'optionsUrl' => '/api/mobile-panel/table-filters/filter-options',
+            'searchable' => true,
+        ])->and($filters['remote_search']['config'])->toBe([
+            'optionsUrl' => '/api/mobile-panel/table-filters/filter-options',
+            'searchable' => true,
+        ])->and($filters)->not->toHaveKey('empty_opts');
     });
 });
 

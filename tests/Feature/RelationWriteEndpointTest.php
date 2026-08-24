@@ -137,6 +137,29 @@ it('422s an update the child form rejects, keyed by field', function () {
     expect($banner->fresh()->name)->toBe('Before');
 });
 
+it('enforces the child keyvalue gates on relation updates', function () {
+    $acme = Company::create(['name' => 'Acme']);
+    $banner = Banner::create([
+        'company_id' => $acme->id,
+        'name' => 'Before',
+        'status' => 'draft',
+        'internal_note' => 'x',
+        'restricted_meta_2' => ['a' => '1', 'b' => '2'],
+    ]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/companies/{$acme->id}/relations/banners/{$banner->id}", [
+            'name' => 'Before',
+            'body_html' => '<p>Body</p>',
+            'restricted_meta_2' => ['a' => 'changed', 'b' => '2'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta_2.0'))
+        ->toBe('Existing values cannot be changed for this field.')
+        ->and($banner->fresh()->restricted_meta_2)->toBe(['a' => '1', 'b' => '2']);
+});
+
 it('deletes a child row, answering 200 with the deleted row', function () {
     // Deliberately NOT destroy()'s 204-with-no-body: the relation client
     // holds a list it must reconcile, and the design spec fixes the 200 +
@@ -150,7 +173,8 @@ it('deletes a child row, answering 200 with the deleted row', function () {
         ->assertJsonPath('data.name', 'Doomed')
         ->assertJsonPath('data.id', $banner->id);
 
-    expect(Banner::query()->find($banner->id))->toBeNull();
+    expect(Banner::query()->find($banner->id))->toBeNull()
+        ->and($acme->fresh()->name)->toBe('mobile delete: after');
 });
 
 it('404s an update naming a child of a DIFFERENT parent — never a cross-parent write', function () {

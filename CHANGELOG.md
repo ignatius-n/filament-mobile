@@ -1,6 +1,120 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-08-24
+
+- **Long reactive gate chains settle without an arbitrary 32-pass failure.**
+  The default ceiling is derived from the first pass's writable-name count,
+  whose monotonic allow-set proves the required upper bound. An explicit
+  `maxPasses` remains an exact fail-closed test/diagnostic pin; `null` is now
+  the auto-derive sentinel, so explicitly passing the literal `32` no longer
+  gets mistaken for an omitted argument and expanded silently.
+
+- **Relation discovery is memoised per Laravel request/job scope.** The
+  expensive relation-manager table walk is shared by published/refusal reads,
+  including `/schema`, relation endpoints, and `filament-mobile:doctor`, while
+  child-resource ownership remains registry-dependent and is resolved after
+  the cache. The key fingerprints relation cards and relation declaration
+  keys rather than `MobileResource` object identity. Laravel's scoped binding
+  prevents tenant/user/locale-dependent declarations from leaking across
+  Octane, Swoole, or long-running queue-worker boundaries. Rich-text
+  conversion was already independently memoised per `RecordSerializer` and
+  needed no second cache.
+
+- **Named fields and entries can override text direction.** A literal `ltr`
+  or `rtl` from `extraInputAttributes(['dir' => ...])`, falling back to
+  `extraAttributes()`, publishes as node-level `direction`; invalid values
+  and throwing closures inherit the panel safely. Input attributes win when
+  both are present, matching the web component's specificity.
+
+- **KeyValue gates are now authoritative.** Resource and relation create/
+  update endpoints compare submitted maps with trusted form defaults or cast
+  stored values and enforce `addable`, `deletable`, `editableKeys`, and
+  `editableValues` with field-keyed 422 responses. Because the map wire shape
+  has no row identity, key-locked fields conservatively reject a request that
+  both adds and removes keys; pure operations continue to follow their own
+  independent gates. Permission closures that throw fail the write closed. A
+  repeater containing a restricted KeyValue is now refused and published
+  read-only because its rows likewise have no stable comparison identity.
+
+- **P20 phase 2: optional private-channel Reverb invalidation.** Resources opt
+  in with `->broadcasts()` and their models use `BroadcastsMobileChanges`.
+  `/schema` publishes only public connection settings and authorized resource
+  channel names; events contain only `{key, id, event}` and always trigger an
+  authorized HTTP revalidation on the client. The package registers the
+  `mobile.{resourceKey}` authorization rule, honours `X-Socket-ID`, broadcasts
+  after commit, and adds fail-closed realtime checks to
+  `filament-mobile:doctor`. Reverb, its queue worker, and the guarded
+  `/broadcasting/auth` route remain host-owned infrastructure.
+
+- **P20 phase 1: opt-in, poll-first background refresh.** Set
+  `filament-mobile.poll` to `true` for the safe defaults (lists/details every
+  15 seconds, dashboard every 5), or publish explicit positive intervals per
+  surface. The setting is absent from `/schema` when disabled or malformed,
+  so existing clients and hosts keep their no-timer behavior. List, record,
+  and dashboard reads now also return content `ETag`s and honour
+  `If-None-Match` with an empty 304. This is the production fallback that
+  needs no queue, socket server, or broadcast-channel authorization; Reverb
+  remains a separate infrastructure phase.
+
+- **P19: first-class map points and phone numbers.**
+  `dotswan/filament-map-picker` fields publish as `map_point` and entries as
+  `map_point_entry`; numeric-string coordinates are normalised to numbers on
+  read, interaction/tile/camera hints travel in `config`, and one JSON point
+  column round-trips through the ordinary write path. GeoMan maps, split
+  latitude/longitude storage, and unreadable map configuration fail closed
+  and are named by `filament-mobile:doctor`. `ysfkaya/filament-phone-input`
+  publishes as `phone`, including its closed format and country hints, keeps
+  values verbatim, and retains the plugin's real server-side phone rule.
+  Livewire IP lookup is refused; declare `disableLookup()` and a
+  `defaultCountry()` instead. Both optional plugins are development-only
+  dependencies of this repository, not runtime requirements for hosts that
+  do not use them.
+
+- The write path now includes top-level hidden components while evaluating
+  writability, matching `/state`. Ordinary hidden fields remain excluded by
+  Filament's dehydration rules, while a field explicitly configured with
+  `dehydratedWhenHidden()` now writes on create and update instead of being
+  silently discarded behind a successful response.
+- A value removed by the monotonic schema settlement is no longer silently
+  discarded behind HTTP 200 when the final schema build reopens its field.
+  Resource and relation create/update endpoints now return a field-keyed 422,
+  which existing Flutter clients surface through `WriteInvalid`.
+- Mobile deletes now run one explicit, transaction-backed lifecycle declared
+  on `MobileResource`: `beforeDelete()`, `deleteUsing()`, and `afterDelete()`.
+  It applies equally to resource and relation-row deletes. Returning false
+  from `deleteUsing()` rolls back and answers 409; absent hooks preserve the
+  existing model-delete behavior, including observers and soft deletes.
+
+- **Remote table-filter options.** Over-cap static `SelectFilter` lists and
+  searchable dynamic/relationship filters now publish `optionsUrl` and are
+  served by authenticated `POST {resource}/filter-options`. The endpoint
+  repeats resource/filter visibility gates, reuses Filament's search callback,
+  and preserves strict whitelisting for large static lists. Only an empty,
+  non-searchable select remains refused.
+
+- **P24: table filters.** A resource's `table()->filters([...])` now publish
+  on `/schema` as `filters`, a sibling of `columns`/`actions`, and are
+  enforced on the list endpoint (`GET {resource}?filter[name]=value`) by
+  handing the request's state to the resource's OWN Filament filter object —
+  `SelectFilter` (single or `->multiple()`/`MultiSelectFilter`),
+  `TernaryFilter`, and `TrashedFilter` (a fixed 1/0 pair with Filament's own
+  labels: with/only/without trashed). A `QueryBuilder`, a bare custom
+  `Filter`, or an empty non-searchable select is refused and named by
+  `filament-mobile:doctor` rather than shipped broken. `mobile()->filters([...])`
+  narrows the published set the same way `->actions()`/`->sorts()` already
+  do. **An empty scalar clears a filter, including a `->multiple()` one** —
+  `?filter[tags]=` means "any", because a query string cannot express an
+  empty list — the one deliberate exception in an otherwise strict 422
+  matrix (unknown name, wrong shape, unknown value). "422 over silence" is a
+  list-endpoint-only promise: `?filter[...]` is silently ignored, never
+  read, on the relation and record (`show()`) endpoints. `show()` resolves
+  through an empty filter state on purpose, so a soft-deleted record's
+  detail screen stays reachable at its own URL while `PUT`/`DELETE` to the
+  same id 404 — the write endpoints resolve through the plain resource
+  query, untouched by this slice. Doctor gains one more diagnostic: a
+  refused or narrowed-away filter whose `->default()` still applies on the
+  web makes the mobile list wider than the panel's, named explicitly rather
+  than left to be discovered.
 
 - **P18: reorderable resources.** A resource whose Filament table declares
   `->reorderable('column')` now publishes `reorder: {column, direction}` in

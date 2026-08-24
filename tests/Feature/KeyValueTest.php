@@ -142,6 +142,132 @@ it('persists a submitted map through the unmodified write path', function () {
     expect($banner->fresh()->meta)->toBe(['env' => 'production', 'region' => 'eu']);
 });
 
+it('rejects adding a pair when addable is false', function () {
+    $banner = seedBannerWith(['restricted_meta' => ['a' => '1', 'b' => '2']]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta' => ['a' => '1', 'b' => '2', 'c' => '3'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta.0'))
+        ->toBe('Pairs cannot be added to this field.')
+        ->and($banner->fresh()->restricted_meta)->toBe(['a' => '1', 'b' => '2']);
+});
+
+it('enforces structural gates against trusted form defaults on create', function () {
+    $response = $this->actingAs(makeUser('admin'))
+        ->postJson('/api/mobile-panel/banners', [
+            'name' => 'Created banner',
+            'body_html' => '<p>Body</p>',
+            // The trusted create baseline is the fixture's default a/b map,
+            // not an empty record. Only c is an addition, and addable(false)
+            // must reject it before create() reaches the database.
+            'restricted_meta' => ['a' => '1', 'b' => '2', 'c' => '3'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta.0'))
+        ->toBe('Pairs cannot be added to this field.')
+        ->and(\Gait\FilamentMobile\Tests\Fixtures\Models\Banner::query()
+            ->where('name', 'Created banner')->exists())->toBeFalse();
+});
+
+it('allows a pure deletion when keys are locked but deletable is true', function () {
+    $banner = seedBannerWith(['restricted_meta' => ['a' => '1', 'b' => '2']]);
+
+    $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta' => ['b' => '2'],
+        ])
+        ->assertOk();
+
+    expect($banner->fresh()->restricted_meta)->toBe(['b' => '2']);
+});
+
+it('rejects an ambiguous rename when key editing is false', function () {
+    $banner = seedBannerWith(['restricted_meta' => ['a' => '1', 'b' => '2']]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta' => ['renamed' => '1', 'b' => '2'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta.0'))
+        ->toBe('Keys cannot be renamed for this field.')
+        ->and($banner->fresh()->restricted_meta)->toBe(['a' => '1', 'b' => '2']);
+});
+
+it('rejects deleting a pair when deletable is false', function () {
+    $banner = seedBannerWith(['restricted_meta_2' => ['a' => '1', 'b' => '2']]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta_2' => ['b' => '2'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta_2.0'))
+        ->toBe('Pairs cannot be removed from this field.')
+        ->and($banner->fresh()->restricted_meta_2)->toBe(['a' => '1', 'b' => '2']);
+});
+
+it('rejects changing an existing value when editable values is false', function () {
+    $banner = seedBannerWith(['restricted_meta_2' => ['a' => '1', 'b' => '2']]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta_2' => ['a' => 'changed', 'b' => '2'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.restricted_meta_2.0'))
+        ->toBe('Existing values cannot be changed for this field.')
+        ->and($banner->fresh()->restricted_meta_2)->toBe(['a' => '1', 'b' => '2']);
+});
+
+it('allows adding a new pair with its initial value while existing values are locked', function () {
+    $banner = seedBannerWith(['restricted_meta_2' => ['a' => '1', 'b' => '2']]);
+
+    $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'restricted_meta_2' => ['a' => '1', 'b' => '2', 'c' => '3'],
+        ])
+        ->assertOk();
+
+    expect($banner->fresh()->restricted_meta_2)->toBe(['a' => '1', 'b' => '2', 'c' => '3']);
+});
+
+it('fails closed when a keyvalue permission closure throws', function () {
+    $banner = seedBannerWith(['exploding_meta' => []]);
+
+    $response = $this->actingAs(makeUser('admin'))
+        ->putJson("/api/mobile-panel/banners/{$banner->id}", [
+            'name' => $banner->name,
+            'body_html' => '<p>Body</p>',
+            'exploding_meta' => ['a' => '1'],
+        ])
+        ->assertStatus(422);
+
+    expect($response->json('errors.exploding_meta.0'))
+        ->toBe('The key/value permissions could not be evaluated. Refresh and try again.')
+        ->and($banner->fresh()->exploding_meta)->toBe([]);
+});
+
 it('publishes an empty keyvalue default as a JSON object, not a JSON list', function () {
     // Fix round 1, Finding 4. `locked_meta` and `exploding_meta` both never
     // call ->default() — so KeyValue::setUp()'s own `$this->default([])`

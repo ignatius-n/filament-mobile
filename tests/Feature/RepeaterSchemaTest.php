@@ -203,3 +203,18 @@ it('publishes a repeater read-only when a relation-write child is forced back in
     expect($node)->not->toBeNull()
         ->and($node['config']['readOnly'])->toBeTrue();
 });
+
+it('publishes json and relationship repeaters read-only around a restricted keyvalue child', function () {
+    $nodes = (new SchemaWalker(new WalkWarnings()))->walk(
+        RepeaterProblemResource::form(Schema::make(null)->model(Banner::class))->getComponents(),
+        'RepeaterProblemResource',
+    );
+
+    $byName = collect($nodes)->keyBy('name');
+
+    expect($byName['restricted_map_rows']['config']['readOnly'])->toBeTrue()
+        ->and($byName['restricted_relation_rows']['config']['readOnly'])->toBeTrue()
+        // Control: a relationship repeater with only unrestricted children
+        // remains editable, so this does not revert P9 wholesale.
+        ->and($byName['rel_rows']['config']['readOnly'])->toBeFalse();
+});

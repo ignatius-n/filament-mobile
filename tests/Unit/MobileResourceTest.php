@@ -226,3 +226,18 @@ it('keeps declared action names in declaration order, de-duplicated and re-index
 
     expect($resource->getActions())->toBe(['approve', 'archive']);
 });
+
+it('stores the explicit mobile delete lifecycle callbacks', function () {
+    $before = fn () => null;
+    $using = fn () => true;
+    $after = fn () => null;
+
+    $resource = MobileResource::make()
+        ->beforeDelete($before)
+        ->deleteUsing($using)
+        ->afterDelete($after);
+
+    expect($resource->getBeforeDelete())->toBe($before)
+        ->and($resource->getDeleteUsing())->toBe($using)
+        ->and($resource->getAfterDelete())->toBe($after);
+});

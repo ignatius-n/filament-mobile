@@ -51,6 +51,17 @@ it('annotates the dotted siblings of a real translatable attribute, never the un
         ->and(findFormNode($notice, 'title'))->not->toHaveKey('translatable');
 });
 
+it('publishes independent directions for locale fields and infolist entries', function () {
+    config()->set('filament-mobile.resources', [NoticeResource::class]);
+
+    $notice = schemaFor('notices');
+
+    expect(findFormNode($notice, 'caption.ar')['direction'])->toBe('rtl')
+        ->and(findFormNode($notice, 'caption.en')['direction'])->toBe('ltr')
+        ->and(findFormNode($notice, 'title'))->not->toHaveKey('direction')
+        ->and(collect($notice['infolist'])->firstWhere('name', 'title')['direction'])->toBe('rtl');
+});
+
 it('never annotates a dotted field on a model without the real HasTranslations trait', function () {
     // Banner's `caption` is cast to `array`, never `Spatie\Translatable\
     // HasTranslations` — the fake-cast fixture the design spec names as the

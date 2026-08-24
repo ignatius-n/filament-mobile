@@ -51,27 +51,63 @@ final class RelationDiscovery
      *
      * @return list<array{key: string, label: string, manager: class-string, columns: list<array{name: string, label: string}>, card: MobileCard, related: class-string|null, resource: class-string|null}>
      */
-    public static function for(string $resourceClass, ?MobileResource $mobile = null, ?ResourceRegistry $registry = null): array
+    public static function for(
+        string $resourceClass,
+        ?MobileResource $mobile = null,
+        ?ResourceRegistry $registry = null,
+        ?RelationDiscoveryMemo $memo = null,
+    ): array
     {
-        return self::split($resourceClass, $mobile, $registry)['published'];
+        $registry ??= new ResourceRegistry();
+        $split = self::split($resourceClass, $mobile, $memo);
+        $published = [];
+
+        // Child-resource resolution is deliberately outside the memo. It
+        // depends on the caller's registry, while the expensive portion above
+        // depends only on the resource and its relation declarations. Caching
+        // the final `resource` answer would let one custom registry poison
+        // another within the same request.
+        foreach ($split['published'] as $relation) {
+            $relation['resource'] = $relation['related'] === null || ! $relation['createsLinked']
+                ? null
+                : $registry->findByModel($relation['related']);
+            $published[] = $relation;
+        }
+
+        return $published;
     }
 
     /** @return array<string, string> class name => reason */
-    public static function refusalsFor(string $resourceClass, ?MobileResource $mobile = null): array
+    public static function refusalsFor(
+        string $resourceClass,
+        ?MobileResource $mobile = null,
+        ?RelationDiscoveryMemo $memo = null,
+    ): array
     {
-        return self::split($resourceClass, $mobile, null)['refused'];
+        return self::split($resourceClass, $mobile, $memo)['refused'];
     }
 
     /** @return array{published: list<array<string, mixed>>, refused: array<string, string>} */
-    private static function split(string $resourceClass, ?MobileResource $mobile, ?ResourceRegistry $registry): array
+    private static function split(
+        string $resourceClass,
+        ?MobileResource $mobile,
+        ?RelationDiscoveryMemo $memo,
+    ): array
+    {
+        $memo ??= RelationDiscoveryMemo::current();
+
+        return $memo->remember(
+            $resourceClass,
+            $mobile,
+            fn (): array => self::discover($resourceClass, $mobile),
+        );
+    }
+
+    /** @return array{published: list<array<string, mixed>>, refused: array<string, string>} */
+    private static function discover(string $resourceClass, ?MobileResource $mobile): array
     {
         $published = [];
         $refused = [];
-
-        // Stateless (it reads the config/filament-mobile.resources list or the
-        // panel, never request state), so a caller without one gets a fresh
-        // instance answering identically.
-        $registry ??= new ResourceRegistry();
 
         /** @var list<string> every relationship name read, published or not */
         $seen = [];
@@ -214,9 +250,6 @@ final class RelationDiscovery
                 // guessing between two forms would write one at random.
                 'related' => $relatedClass,
                 'createsLinked' => $createsLinked,
-                'resource' => $relatedClass === null || ! $createsLinked
-                    ? null
-                    : $registry->findByModel($relatedClass),
             ];
         }
 

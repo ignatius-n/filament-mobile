@@ -9,10 +9,11 @@ use Filament\Forms\Components\RichEditor\Models\Contracts\HasRichContent;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Gait\FilamentMobile\BroadcastsMobileChanges;
 
 class Banner extends Model implements HasRichContent
 {
-    use InteractsWithRichContent;
+    use BroadcastsMobileChanges, InteractsWithRichContent;
 
     protected $guarded = [];
 
@@ -70,6 +71,7 @@ class Banner extends Model implements HasRichContent
         // directly and seedBannerWith() plant one.
         'gallery' => 'array',
         'attachments' => 'array',
+        'location' => 'array',
     ];
 
     /**

@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Gait\FilamentMobile\Tests\Fixtures\Resources;
 
+use Closure;
+use Dotswan\MapPicker\Fields\Map;
+use Dotswan\MapPicker\Infolists\MapEntry;
 use Filament\Actions\Action;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\FileUpload;
@@ -34,6 +37,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\HtmlString;
 use RuntimeException;
 use UnitEnum;
+use Ysfkaya\FilamentPhoneInput\Forms\PhoneInput;
+use Ysfkaya\FilamentPhoneInput\PhoneInputNumberType;
 
 class BannerResource extends Resource
 {
@@ -46,6 +51,7 @@ class BannerResource extends Resource
     public static function mobile(): MobileResource
     {
         return MobileResource::make()
+            ->broadcasts((bool) config('filament-mobile.tests.banner_broadcasts', false))
             ->card(fn (MobileCard $card) => $card
                 ->title('name')
                 ->subtitle('company.name')
@@ -69,7 +75,24 @@ class BannerResource extends Resource
                 'failing', 'cancelling', 'html_label',
                 // Resolves nowhere — the doctor case.
                 'ghost',
-            ]);
+            ])
+            // The API equivalent of this resource's DeleteAction lifecycle.
+            // Each stage leaves an observable database value so both the
+            // top-level and relation delete tests prove the hooks really ran
+            // in order, rather than merely proving the record disappeared.
+            ->beforeDelete(fn (Banner $record) => $record->company?->update([
+                'name' => 'mobile delete: before',
+            ]))
+            ->deleteUsing(function (Banner $record, Closure $delete): ?bool {
+                if ($record->company?->name !== 'mobile delete: before') {
+                    return false;
+                }
+
+                return $delete();
+            })
+            ->afterDelete(fn (Banner $record) => $record->company?->update([
+                'name' => 'mobile delete: after',
+            ]));
     }
 
     /**
@@ -480,12 +503,6 @@ class BannerResource extends Resource
                 // the record resolves and the closure genuinely says yes.
                 TextInput::make('strict_note')
                     ->dehydrated(fn (Banner $record): bool => true),
-                // Hidden in its own right rather than by operation, and NESTED,
-                // which is what makes it a real case: `store()` reads
-                // `getComponents()` and that filters hidden components at the
-                // top level only, so a top-level one never reached the defaults
-                // extractor and proved nothing. Below the top level it does.
-                Hidden::make('hidden_note')->hidden()->default('leak'),
                 // An ordinary gate that raises an exception carrying submitted
                 // input verbatim: ModelNotFoundException appends the ids it
                 // looked for. That is what let a client steer the guard's own
@@ -560,6 +577,25 @@ class BannerResource extends Resource
                 // protects `locked_note` above. Never written, so no column.
                 FileUpload::make('restricted_image'),
             ]),
+            // Top-level on purpose. Plain `Schema::getComponents()` drops a
+            // hidden top-level component before WritableNames can honour its
+            // explicit `dehydratedWhenHidden()` setting. `/state` already
+            // reads withHidden, so this is the parity regression fixture.
+            TextInput::make('hidden_note')
+                ->hidden()
+                ->dehydratedWhenHidden(),
+            Map::make('location')
+                ->defaultLocation(30.0444, 31.2357)
+                ->zoom(12)
+                ->minZoom(3)
+                ->maxZoom(19)
+                ->clickable(true),
+            PhoneInput::make('phone')
+                ->disableLookup()
+                ->defaultCountry('EG')
+                ->countryStatePath('phone_country')
+                ->inputNumberFormat(PhoneInputNumberType::E164)
+                ->validateFor('EG'),
             // The flat half of the same guard: `dehydrated(false)` needs no
             // state, so it is readable even detached. `Select::relationship()`
             // is this shape.
@@ -794,6 +830,8 @@ class BannerResource extends Resource
             // data, which is the same column the form above already edits
             // with RichEditor.
             TextEntry::make('body_html'),
+            MapEntry::make('location')
+                ->zoom(12),
         ]);
     }
 }

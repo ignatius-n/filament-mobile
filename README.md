@@ -2741,3 +2741,44 @@ vendor/bin/pest
 CI runs the suite against Filament 4 and 5, and separately against MySQL — a
 `LIKE ... ESCAPE` clause once passed on SQLite and failed on MySQL, so one
 driver is not enough.
+
+## Status & roadmap
+
+The package is production-released and in daily use; everything documented
+above is shipped and tested (1000+ tests on each side, CI against Filament 4
+and 5, SQLite and MySQL). In short, what already works end to end:
+
+- Panel index, lists (search, sort, filters, pagination), record view,
+  create/edit/delete, per-record actions — all opt-in per resource, all
+  fail-closed, all diagnosed by `filament-mobile:doctor`.
+- Some thirty field and entry types, including repeater, single/multi file
+  upload, medialibrary, tags, key/value, slider, toggle buttons, colour,
+  date/time bounds, map points and phone numbers.
+- Relations: read, search/sort, and row create/edit/delete.
+- Dashboard widgets, Spatie integrations (medialibrary, tags, translatable,
+  sluggable, reorderable), validation messages in the panel's locale, schema
+  caching with ETags, background refresh (polling + a Reverb seam).
+
+What is next, in rough priority order — help welcome on any of it:
+
+- **In-app notification bell** over the existing Reverb seam (no APNs/FCM
+  push yet; that is a later, separate slice).
+- **In-app UI language picker** on the client — client-side, persisted per
+  device.
+- **Rich-text editing on the client.** Rich content publishes today and
+  edits as a plain textarea; a real mobile editor is the largest open item.
+- **Repeater gaps**: `live()` reactivity inside rows, nested repeaters, and
+  row reordering.
+- **Locale-aware value formatting** on the client's entry widgets.
+- **Pivot attach/detach** for BelongsToMany relations — row create/edit/
+  delete works; attaching an *existing* record does not.
+
+Deliberately out of scope — please do not propose them: a login/auth flow
+(the host app owns authentication; this package only consumes the guard),
+bulk actions, and `TableWidget` / arbitrary Blade or Livewire views (no data
+contract to read).
+
+Development happens in a private monorepo; this repository is its public
+snapshot. Issues and pull requests are welcome here — accepted changes are
+ported into the monorepo with credit in the changelog and ship in the next
+release, so a PR may be closed as "merged" without a merge commit.

@@ -2602,6 +2602,54 @@ this resource-wide opt-in.
 
 Keep `poll` enabled alongside realtime for a bounded connection-gap watchdog.
 
+## Notifications
+
+The in-app bell (P21), mirroring Filament's own database-notifications bell
+headlessly. Opt-in, default off:
+
+```php
+// config/filament-mobile.php
+'notifications' => true,
+
+// Or tune the badge's polling cadence, in seconds (default 30 — the web
+// bell's own).
+'notifications' => ['poll' => 60],
+```
+
+`/schema` then publishes `panel.notifications` — `{"poll": 30}` plus, when
+`realtime` is also configured, the user's private notification `channel`
+(the exact name Filament's `DatabaseNotificationsSent` broadcasts on,
+honouring a `receivesBroadcastNotificationsOn()` override). A malformed
+interval drops the whole node — the `poll` rule. Five endpoints serve the
+feed, all under the panel prefix and auth middleware, none resource-gated
+(the feed is the authenticated user's own rows, filtered to
+`data->format = 'filament'` exactly like the web component):
+
+- `GET notifications` — the standard paginated envelope plus a top-level
+  `unread` count, wrapped in the same ETag machinery as the list endpoints,
+  so an unchanged badge poll is a ~200-byte 304.
+- `POST notifications/{id}/read`, `POST notifications/read-all` — both
+  answer `{"unread": n}`.
+- `DELETE notifications/{id}`, `DELETE notifications` — Filament's dismiss
+  and clear-all, the latter deleting read **and** unread rows, verbatim.
+
+Rows publish `id`, `title`, `body`, `status`, `color`, `date`, `readAt`,
+and url-carrying `actions` only. `icon`/`iconColor` name a heroicon no
+client of this contract can render, and a custom notification `view` has no
+data contract — neither is published; a view-only notification still
+carries its stored title and body. Titles and bodies travel as stored:
+Filament allows markdown there, and a styled title degrades to its raw
+text on the phone.
+
+The routes exist even with the feature off (conditional registration is a
+route-cache trap); a host whose user model is not `Notifiable` gets empty
+pages, never a 500, and `filament-mobile:doctor` names the
+misconfiguration — along with a missing `notifications` table and a
+notification channel rule that could not be derived from the guard's auth
+provider. Sending is untouched: whatever already writes Filament database
+notifications (`Notification::make()->...->sendToDatabase($user)`) feeds
+the phone with no extra work.
+
 ## Authorization
 
 The panel's existing policies are the only permission model — there is no
@@ -2761,8 +2809,8 @@ and 5, SQLite and MySQL). In short, what already works end to end:
 
 What is next, in rough priority order — help welcome on any of it:
 
-- **In-app notification bell** over the existing Reverb seam (no APNs/FCM
-  push yet; that is a later, separate slice).
+- **Push notifications (APNs/FCM)** — the in-app bell shipped; delivering
+  its feed while the app is closed is the natural next slice.
 - **Rich-text editing on the client.** Rich content publishes today and
   edits as a plain textarea; a real mobile editor is the largest open item.
 - **Repeater gaps**: `live()` reactivity inside rows, nested repeaters, and

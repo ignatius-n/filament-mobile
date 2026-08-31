@@ -87,6 +87,7 @@ final class DoctorCommand extends Command
         $labelProblems = $this->labelProblems($mobile, $builder);
         $filterProblems = $this->filterProblems($mobile, $this->doctorRequest($user));
         $realtimeProblems = $this->realtimeProblems($registry, $mobile);
+        $notificationProblems = $this->notificationsProblems();
 
         $this->exposure($registry, $mobile, $panel);
         $this->section('Unsupported components', [...$unsupported, ...$this->pasteLines($unsupported)]);
@@ -117,10 +118,15 @@ final class DoctorCommand extends Command
             $this->section('Realtime', $realtimeProblems);
         }
 
+        if ($notificationProblems !== []) {
+            $this->section('Notifications', $notificationProblems);
+        }
+
         // A resource nobody could walk is a hole in the gate, not a clean bill
         // of health: CI reads the exit code, not the prose above it.
         $actionable = count($unsupported) + count($drift['actionable'])
             + count($actionProblems) + count($widgetProblems) + count($realtimeProblems)
+            + count($notificationProblems)
             + count($this->skipped($registry, $mobile, $panel));
 
         $this->newLine();
@@ -246,6 +252,44 @@ final class DoctorCommand extends Command
         if (! in_array($expected, $middleware, true)) {
             $problems[] = $configuration['authEndpoint'] . ': expected `' . $expected
                 . '` so private channels use the same guard as the mobile API';
+        }
+
+        return $problems;
+    }
+
+    /**
+     * P21. Conditional and actionable, like realtimeProblems() above: the
+     * bell is opt-in, and every line here maps to a configuration change the
+     * host can make. Off (`false`) reports nothing. The endpoints themselves
+     * never 500 on any of these — they degrade to empty pages — which is
+     * exactly why this is doctor's to make loud.
+     *
+     * @return list<string>
+     */
+    private function notificationsProblems(): array
+    {
+        if (config('filament-mobile.notifications', false) === false) {
+            return [];
+        }
+
+        $problems = [];
+        $provider = config('auth.guards.' . $this->guard() . '.provider');
+        $model = is_string($provider) ? config("auth.providers.{$provider}.model") : null;
+
+        if (! is_string($model) || ! class_exists($model)) {
+            $problems[] = 'filament-mobile.notifications is enabled but the ' . $this->guard()
+                . " guard's auth provider does not resolve to a user model class";
+        } elseif (! method_exists($model, 'notifications')) {
+            $problems[] = class_basename($model)
+                . ' must use Notifiable — every notifications request answers an empty page until it does';
+        }
+
+        if (! Schema::hasTable('notifications')) {
+            $problems[] = 'the `notifications` table is missing — `php artisan make:notifications-table && php artisan migrate`';
+        }
+
+        if (Realtime::configuration() !== null && Realtime::userChannelPattern() === null) {
+            $problems[] = 'realtime is configured but the private notification channel rule could not be registered, so the bell falls back to polling';
         }
 
         return $problems;

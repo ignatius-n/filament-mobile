@@ -51,6 +51,21 @@ class FilamentMobileServiceProvider extends ServiceProvider
             fn ($user, string $resourceKey): bool => Realtime::authorizes($user, $resourceKey),
         );
 
+        // P21: the user's private notification channel — the derived-default
+        // name Realtime::userChannel() publishes, matched here by the same
+        // rule Laravel's own channels.php scaffold ships. Unresolvable auth
+        // config skips the registration silently (doctor reports it), and a
+        // host rule with the same pattern wins because app providers boot
+        // after this one.
+        $pattern = Realtime::userChannelPattern();
+
+        if ($pattern !== null) {
+            Broadcast::channel(
+                $pattern,
+                fn ($user, $id): bool => (string) $user->getAuthIdentifier() === (string) $id,
+            );
+        }
+
         if ($this->app->runningInConsole()) {
             $this->commands([Console\DoctorCommand::class]);
         }

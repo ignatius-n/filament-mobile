@@ -100,6 +100,12 @@ final class PanelSchemaBuilder
             $panel['realtime'] = $realtime;
         }
 
+        $notifications = self::notifications($user, $realtime !== null);
+
+        if ($notifications !== null) {
+            $panel['notifications'] = $notifications;
+        }
+
         return [
             'version' => 1,
             'panel' => $panel,
@@ -243,6 +249,46 @@ final class PanelSchemaBuilder
         }
 
         return $poll;
+    }
+
+    /**
+     * P21: the in-app bell's declaration. `poll` follows Filament's own
+     * 30-second bell cadence and poll()'s fail-closed rule above — a
+     * malformed interval drops the whole node rather than starting a timer
+     * the host did not choose. `channel` is published, never reconstructed
+     * client-side: the name derives from the host's user FQCN (or its
+     * receivesBroadcastNotificationsOn() override), which a client cannot
+     * know — and only when realtime is configured AND the build has a user,
+     * because an anonymous build (doctor, the goldens) has no channel to
+     * name. An absent channel means poll-only.
+     *
+     * @return array{poll: int, channel?: string}|null
+     */
+    private static function notifications(?Authenticatable $user, bool $realtime): ?array
+    {
+        $configured = config('filament-mobile.notifications', false);
+
+        if ($configured === true) {
+            $configured = [];
+        }
+
+        if (! is_array($configured)) {
+            return null;
+        }
+
+        $poll = $configured['poll'] ?? 30;
+
+        if (! is_int($poll) || $poll < 1 || $poll > 3600) {
+            return null;
+        }
+
+        $node = ['poll' => $poll];
+
+        if ($realtime && $user !== null) {
+            $node['channel'] = Realtime::userChannel($user);
+        }
+
+        return $node;
     }
 
     /** @return array<string, mixed> */

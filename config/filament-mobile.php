@@ -40,6 +40,16 @@ return [
     // broadcast connection must still be Reverb. Secrets are never published.
     'realtime' => false,
 
+    // Opt-in in-app notification bell, mirroring Filament's own database
+    // notifications. False publishes no `panel.notifications` node and the
+    // notification endpoints answer empty pages. True polls the badge every
+    // 30 seconds (Filament's own bell cadence); an array may override the
+    // interval: ['poll' => 60]. A non-integer or out-of-range (1–3600) poll
+    // drops the whole node rather than starting a timer the host did not
+    // choose. With `realtime` also enabled, the user's private notification
+    // channel is published beside the interval.
+    'notifications' => false,
+
     // Explicit resource list. Null (the default) reads the registered Filament
     // panel, so resources are never listed twice. Set an array only where no
     // panel is booted — or to serve a deliberate subset.

@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Gait\FilamentMobile\Http\DashboardController;
 use Gait\FilamentMobile\Http\FilterOptionsController;
 use Gait\FilamentMobile\Http\MobilePanelController;
+use Gait\FilamentMobile\Http\NotificationsController;
 use Gait\FilamentMobile\Http\OptionsController;
 use Gait\FilamentMobile\Http\RelationController;
 use Gait\FilamentMobile\Http\ReorderController;
@@ -30,6 +31,16 @@ Route::prefix(config('filament-mobile.prefix'))
         // A literal, like `schema` — above the {resource} wildcards so it is
         // never matched as a resource key.
         Route::get('dashboard', DashboardController::class)->name('dashboard');
+        // P21, the notification bell — literal first segments, like `schema`
+        // and `dashboard` above, so `notifications` is never matched as a
+        // resource key. Registered unconditionally even when the feature is
+        // off: conditional registration is a route-cache trap, and the
+        // controller degrades to empty answers instead.
+        Route::get('notifications', [NotificationsController::class, 'index'])->name('notifications');
+        Route::post('notifications/read-all', [NotificationsController::class, 'readAll'])->name('notifications.read-all');
+        Route::post('notifications/{id}/read', [NotificationsController::class, 'read'])->name('notifications.read');
+        Route::delete('notifications/{id}', [NotificationsController::class, 'destroy'])->name('notifications.destroy');
+        Route::delete('notifications', [NotificationsController::class, 'clear'])->name('notifications.clear');
         // Above {resource}/{record} so `state` is never captured as a record id.
         Route::post('{resource}/state', StateController::class)->name('state');
         // Same reason, same placement: `options` is a literal, not a record id.

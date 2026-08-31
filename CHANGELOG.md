@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **P21: the in-app notification bell.** Five authenticated endpoints under
+  the panel prefix serve the web bell's exact feed headlessly — the user's
+  own `data->format = 'filament'` rows: `GET notifications` (paginated
+  envelope + top-level `unread`, ETag/304), `POST notifications/{id}/read`
+  and `POST notifications/read-all` (both answer `{"unread": n}`),
+  `DELETE notifications/{id}` and `DELETE notifications` (Filament's
+  dismiss and clear-all semantics, read and unread alike). Opt-in via
+  `filament-mobile.notifications`; `/schema` publishes
+  `panel.notifications` (`poll`, default 30s — the web bell's cadence —
+  fail-closed on a malformed interval) plus the user's private notification
+  `channel` when realtime is also configured, honouring
+  `receivesBroadcastNotificationsOn()`. The provider registers the derived
+  channel rule; doctor gains an actionable Notifications section
+  (non-`Notifiable` user model, missing `notifications` table,
+  unregistrable channel rule). Row payloads never publish `icon`/`view` —
+  capabilities no client of this contract can honour.
+
 ## 0.9.0 — 2026-08-24
 
 - **Long reactive gate chains settle without an arbitrary 32-pass failure.**

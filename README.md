@@ -2763,8 +2763,6 @@ What is next, in rough priority order — help welcome on any of it:
 
 - **In-app notification bell** over the existing Reverb seam (no APNs/FCM
   push yet; that is a later, separate slice).
-- **In-app UI language picker** on the client — client-side, persisted per
-  device.
 - **Rich-text editing on the client.** Rich content publishes today and
   edits as a plain textarea; a real mobile editor is the largest open item.
 - **Repeater gaps**: `live()` reactivity inside rows, nested repeaters, and
